@@ -28,10 +28,10 @@ def grouped_pca(grouped_features, n_components: int, pca_models_by_group=None):
             for vid, features in vid_dict.items():
                 X_l.append(features)
             X = np.vstack(X_l)
-            pca = PCA(n_components=n_components)
+            pca = PCA(n_components=min(n_components, X.shape[1]))
             pca.fit(X)
             logger.debug("group {}: {} instances".format(group_name, len(X_l)))
-            logger.debug("group {}: pca explained {} of the variance".format(group_name, pca.explained_variance_.sum()))
+            logger.debug("group {}: pca explained {} of the variance".format(group_name, pca.explained_variance_ratio_.sum()))
             pca_models_by_group[group_name] = pca
     transformed = {
         group_name: {

@@ -43,9 +43,10 @@ class BreakfastCorpus(Corpus):
                     if not self._full and len(self._videos_by_task[task]) > 10:
                         continue
                     # use extracted features from pretrained on gt embedding
-                    path = os.path.join(root, filename)
+                    # path = os.path.join(root, filename)
                     video = BreakfastVideo(
-                        path,
+                        # path,
+                        root,
                         remove_background=self._remove_background,
                         K=self._K_by_task[task],
                         gt=self.gt_map.gt_by_task[task][gt_name],
@@ -217,8 +218,7 @@ class BreakfastGroundTruth(GroundTruth):
 
 class BreakfastVideo(Video):
 
-    @classmethod
-    def load_features(cls, path):
-        feats = _features = np.loadtxt(path)
+    def load_features(self):
+        feats = _features = np.loadtxt(os.path.join(self._feature_root, "{}.txt".format(self.name)))
         feats = feats[1:, 1:]
         return feats

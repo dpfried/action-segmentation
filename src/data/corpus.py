@@ -22,11 +22,11 @@ FEATURE_LABEL_MISMATCH_TOLERANCE = 50
 WARN_ON_MISMATCH = False
 
 class Video(object):
-    def __init__(self, path, K, remove_background, *, nonbackground_timesteps=None,
+    def __init__(self, feature_root, K, remove_background, *, nonbackground_timesteps=None,
                  gt=None, gt_with_background=None, name='', cache_features=False, has_label=True):
         """
         Args:
-            path (str): path to video representation
+            feature_root (str): path to video representation
             K (int): number of subactivities in current task
             reset (bool): necessity of holding features in each instance
             gt (arr): ground truth labels
@@ -34,11 +34,13 @@ class Video(object):
             name (str): short name without any extension
         """
         self.iter = 0
-        self.path = path
+        self._feature_root = feature_root
         self._K = K
         self.name = name
         self._cache_features = cache_features
         self._has_label = has_label
+
+        assert name
 
         if remove_background:
             assert has_label
@@ -85,17 +87,16 @@ class Video(object):
 
         # self.segmentation = {'gt': (self._gt, None)}
 
-    @classmethod
-    def load_features(cls, path):
+    def load_features(self):
         raise NotImplementedError("should be implemented by subclasses")
 
     def features(self):
         if self._cache_features:
             if self._features is None:
-                self._features = self._process_features(self.load_features(self.path))
+                self._features = self._process_features(self.load_features())
             features = self._features
         else:
-            features = self._process_features(self.load_features(self.path))
+            features = self._process_features(self.load_features())
         return features
 
     def n_frames(self):
@@ -111,7 +112,7 @@ class Video(object):
                 print(self.path, '# of gt and # of frames does not match %d / %d' %
                       (len(self._gt), n_frames))
 
-            assert len(self._gt) - n_frames <= FEATURE_LABEL_MISMATCH_TOLERANCE
+            assert len(self._gt) - n_frames <= FEATURE_LABEL_MISMATCH_TOLERANCE, "len(self._gt) = {}, n_frames = {}".format(len(self._gt), n_frames)
             min_n = min(len(self._gt), n_frames)
             # self._gt = self._gt[:min_n]
             # self._gt_with_background = self._gt_with_background[:min_n]

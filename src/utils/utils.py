@@ -1,3 +1,7 @@
+def all_equal(xs):
+    xs = list(xs)
+    return all(x == xs[0] for x in xs[1:])
+
 def nested_dict_map(nested_dict, value_map):
     """
     Apply function value_map to each value inside a two-level nested dictionary

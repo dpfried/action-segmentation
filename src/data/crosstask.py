@@ -84,9 +84,25 @@ def random_split(task_vids, test_tasks, n_train):
 
 class CrosstaskVideo(Video):
 
+    def __init__(self, *args, dimensions_per_feature_group=None, **kwargs):
+        self._dimensions_per_feature_group = dimensions_per_feature_group
+        super(CrosstaskVideo, self).__init__(*args, **kwargs)
+
     @classmethod
-    def load_features(cls, path):
-        return np.load(path)
+    def load_grouped_features(cls, feature_root, dimensions_per_feature_group, video_name):
+        if dimensions_per_feature_group is None:
+            return np.load(os.path.join(feature_root, "{}.npy".format(video_name)))
+        else:
+            all_feats = []
+            for feature_group, dimensions in sorted(dimensions_per_feature_group.items()):
+                feat_path = os.path.join(feature_root, feature_group, "{}.npy".format(video_name))
+                feats = np.load(feat_path)
+                feats = feats[:,:dimensions]
+                all_feats.append(feats)
+            return np.hstack(all_feats)
+
+    def load_features(self):
+        return CrosstaskVideo.load_grouped_features(self._feature_root, self._dimensions_per_feature_group, self.name)
 
 class CrosstaskGroundTruth(GroundTruth):
     BACKGROUND_LABEL = "BKG"
@@ -166,9 +182,11 @@ class CrosstaskCorpus(Corpus):
         'related': [1373, 11138, 14133, 16136, 16323, 20880, 20898, 23524, 26618, 29477, 30744, 31438, 34938, 34967, 40566, 40570, 40596, 40610, 41718, 41773, 41950, 42901, 44043, 50348, 51659, 53195, 53204, 57396, 67160, 68268, 72954, 75501, 76407, 76412, 77194, 81790, 83956, 85159, 89899, 91518, 91537, 91586, 93376, 93400, 96127, 96366, 97633, 100901, 101028, 103832, 105209, 105259, 105762, 106568, 106686, 108098, 109761, 110266, 113764, 114508, 118421, 118779, 118780, 118819, 118831],
     }
     
-    def __init__(self, release_root, feature_root, remove_background, task_sets=None, full=True, split='train', task_ids=None):
+    def __init__(self, release_root, feature_root, remove_background, task_sets=None, full=True, split='train', task_ids=None,
+                 dimensions_per_feature_group=None):
         self._release_root = release_root
         self._feature_root = feature_root
+        self._dimensions_per_feature_group = dimensions_per_feature_group
         if task_sets is None:
             task_sets = list(CrosstaskCorpus.TASK_SET_PATHS.keys())
 
@@ -213,9 +231,6 @@ class CrosstaskCorpus(Corpus):
         }
         # features_by_task_and_video = {}
 
-        def make_path(video):
-            return os.path.join(self._feature_root, "{}.npy".format(video))
-
         t_by_video_path = os.path.join(self._release_root, "frame_counts.pkl")
 
         if os.path.exists(t_by_video_path):
@@ -228,7 +243,9 @@ class CrosstaskCorpus(Corpus):
             for task_name in self._task_names:
                 logger.debug(task_name)
                 for video in self._video_names_by_task[task_name]:
-                    feats = CrosstaskVideo.load_features(make_path(video))
+                    feats = CrosstaskVideo.load_grouped_features(
+                        self._feature_root, self._dimensions_per_feature_group, video
+                    )
 
                     # features_by_task_and_video[(task_name, video)] = feats
 
@@ -252,7 +269,8 @@ class CrosstaskCorpus(Corpus):
 
                 nonbackground_timesteps = self.gt_map.nonbackground_timesteps_by_task[task_name][video] if (has_label and self._remove_background) else None
                 self._videos_by_task[task_name][video] = CrosstaskVideo(
-                    make_path(video),
+                    feature_root=self._feature_root,
+                    dimensions_per_feature_group=self._dimensions_per_feature_group,
                     remove_background=self._remove_background,
                     nonbackground_timesteps=nonbackground_timesteps,
                     K=self._K_by_task[task_name],
@@ -278,12 +296,14 @@ def extract_feature_groups(corpus):
             grouped[group][video_name] = features[:,start:end]
     return grouped
 
-def pca_and_serialize_features(release_root, raw_feature_root, output_feature_root, remove_background, pca_components_per_group=300, by_task=True):
+def pca_and_serialize_features(release_root, raw_feature_root, output_feature_root, remove_background, pca_components_per_group=300, by_task=True, task_sets=None):
     if by_task:
-        grouped_corpora = corpora_by_task(release_root, raw_feature_root, remove_background, full=True, split='all')
+        grouped_corpora = corpora_by_task(release_root, raw_feature_root, remove_background,
+                                          full=True, split='all', task_sets=task_sets)
     else:
         grouped_corpora = {
-            'all': CrosstaskCorpus(release_root, raw_feature_root, remove_background, split='all')
+            'all': CrosstaskCorpus(release_root, raw_feature_root, remove_background,
+                                   split='all', task_sets=task_sets)
         }
 
     os.makedirs(output_feature_root, exist_ok=True)
@@ -305,14 +325,14 @@ if __name__ == "__main__":
     raw_feature_root = 'data/crosstask/crosstask_features'
     remove_background = False
     components = 200
-    by_task = False
-    output_feature_root = 'data/crosstask/crosstask_processed/crosstask_pca-{}_{}_{}'.format(
-        components,
-        'no-bkg' if remove_background else 'with-bkg',
-        'by-task' if by_task else 'all-tasks',
-    )
+    task_sets = ['primary']
+    for by_task in [False, True]:
+        output_feature_root = 'data/crosstask/crosstask_processed/crosstask_{}_pca-{}_{}_{}'.format(
+            '+'.join(task_sets),
+            components,
+            'no-bkg' if remove_background else 'with-bkg',
+            'by-task' if by_task else 'all-tasks',
+        )
 
-    pca_and_serialize_features(release_root, raw_feature_root,  output_feature_root, remove_background,
-                               pca_components_per_group=components, by_task=by_task)
-
-
+        pca_and_serialize_features(release_root, raw_feature_root,  output_feature_root, remove_background,
+                                   pca_components_per_group=components, by_task=by_task, task_sets=task_sets)
