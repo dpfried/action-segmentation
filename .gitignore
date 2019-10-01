@@ -1,4 +1,4 @@
-.idea/
-act-recog.iml
 *.pyc
-data/
+/.idea/
+/act-recog.iml
+/data/
