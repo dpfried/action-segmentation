@@ -208,6 +208,8 @@ class GroundTruth(object):
         self.order_by_task = {}
         self.order_with_background_by_task = {}
 
+        self.indices_by_task = None
+
         self.nonbackground_timesteps_by_task = {}
 
         self._background_label = background_label
@@ -215,6 +217,15 @@ class GroundTruth(object):
         self.label2index[self._background_label] = self._background_index
         self.index2label[self._background_index] = self._background_label
         self.load_mapping()
+
+    def _index(self, label):
+        if label not in self.label2index:
+            label_idx = len(self.label2index)
+            self.label2index[label] = label_idx
+            self.index2label[label_idx] = label
+        else:
+            label_idx = self.label2index[label]
+        return label_idx
 
     def _load_gt(self):
         raise NotImplementedError("_load_gt")
@@ -224,7 +235,7 @@ class GroundTruth(object):
         self.order_with_background_by_task = copy.deepcopy(self.order_by_task)
 
         def nonbkg_indices(task, video, gt):
-            return [idx for idx, val in enumerate(gt) if val != self._background_index]
+            return [t for t, gt_t in enumerate(gt) if gt_t[0] != self._background_index]
 
         self.nonbackground_timesteps_by_task = nested_dict_map(self.gt_by_task, nonbkg_indices)
 
@@ -234,7 +245,7 @@ class GroundTruth(object):
             new_gt = []
             for ix, val in enumerate(gt):
                 if ix in nbi_set:
-                    new_gt.append(gt)
+                    new_gt.append(val)
             gt = new_gt
             # if value[0] == 0:
             #     for idx, val in enumerate(value):
@@ -269,6 +280,14 @@ class GroundTruth(object):
 
         if self._remove_background:
             self.remove_background()
+
+        self.indices_by_task = {}
+        for task, gt_dict in self.gt_by_task.items():
+            label_set = set()
+            for vid, gt in gt_dict.items():
+                for gt_t in gt:
+                    label_set.update(gt_t)
+            self.indices_by_task[task] = list(sorted(label_set))
 
 class Corpus(Dataset):
 
@@ -332,6 +351,10 @@ class Corpus(Dataset):
             'gt_with_background': video_obj.gt_with_background(),
         }
         return data
+
+    @property
+    def feature_dim(self):
+        return self[0]['features'].size(1)
 
     def _load_ground_truth_and_videos(self, remove_background):
         raise NotImplementedError("subclasses should implement _load_ground_truth")

@@ -107,8 +107,12 @@ class CrosstaskVideo(Video):
 class CrosstaskGroundTruth(GroundTruth):
     BACKGROUND_LABEL = "BKG"
 
-    def __init__(self, k_by_task, t_by_video, release_folder, task_names, remove_background):
-        self._k_by_task = k_by_task
+    def __init__(self, tasks_by_id, t_by_video, release_folder, task_names, remove_background):
+        self._tasks_by_id = tasks_by_id
+        self._K_by_task = {
+            task_id: len(task.steps) + (0 if remove_background else 1)
+            for task_id, task in tasks_by_id.items()
+        }
         self._t_by_video = t_by_video
         self._release_folder = release_folder
         self._task_names = task_names
@@ -128,11 +132,22 @@ class CrosstaskGroundTruth(GroundTruth):
                 continue
             video = '_'.join(splits[1:])
             T = self._t_by_video[video]
-            num_steps = self._k_by_task[task]
+            num_steps = self._K_by_task[task]
             gt = read_assignment_list(T, num_steps, filename)
+            # turn these step indices into global indices
+            global_gt = []
+            for gt_t in gt:
+                new_gt_t = []
+                for ix in gt_t:
+                    if ix == 0:
+                        label_idx = self._background_index
+                    else:
+                        label_idx = self._index(self._tasks_by_id[task].steps[ix - 1])
+                    new_gt_t.append(label_idx)
+                global_gt.append(new_gt_t)
             if task not in self.gt_by_task:
                 self.gt_by_task[task] = {}
-            self.gt_by_task[task][video] = gt
+            self.gt_by_task[task][video] = global_gt
 
 DATA_SPLITS = ['train', 'val', 'all']
 
@@ -199,6 +214,10 @@ class CrosstaskCorpus(Corpus):
         task_indices = list(sorted(set([task.index for task in tasks])))
         self._task_names = task_indices
 
+        self._tasks_by_id = {
+            task.index: task for task in tasks
+        }
+
         video_names_by_task = {
             task: videos
             for task, videos in load_videos_by_task(release_root, split=split).items()
@@ -225,10 +244,6 @@ class CrosstaskCorpus(Corpus):
         super(CrosstaskCorpus, self).__init__(task_indices, remove_background=remove_background, full=full)
 
     def _load_ground_truth_and_videos(self, remove_background):
-        self._K_by_task = {
-            task.index: len(task.steps)
-            for task in self._tasks
-        }
         # features_by_task_and_video = {}
 
         t_by_video_path = os.path.join(self._release_root, "frame_counts.pkl")
@@ -258,7 +273,8 @@ class CrosstaskCorpus(Corpus):
                 with open(t_by_video_path, 'wb') as f:
                     pickle.dump(t_by_video, f)
 
-        self.gt_map = CrosstaskGroundTruth(self._K_by_task, t_by_video, self._release_root, self._task_names, self._remove_background)
+        self.gt_map = CrosstaskGroundTruth(self._tasks_by_id, t_by_video, self._release_root, self._task_names, self._remove_background)
+        self._K_by_task = self.gt_map._K_by_task
 
         for task_name in self._task_names:
             if task_name not in self._videos_by_task:

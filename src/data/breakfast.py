@@ -136,12 +136,7 @@ class BreakfastGroundTruth(GroundTruth):
                             continue
                         assert start > len(gt) - 1
                         label = match.group(3)
-                        if label not in self.label2index:
-                            label_idx = len(self.label2index)
-                            self.label2index[label] = label_idx
-                            self.index2label[label_idx] = label
-                        else:
-                            label_idx = self.label2index[label]
+                        label_idx = self._index(label)
                         # gt should be a list of lists, since other corpora can have multiple labels per timestep
                         gt += [[label_idx]] * (end - start + 1)
                         order.append((label_idx, start, end))
