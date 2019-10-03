@@ -101,7 +101,7 @@ class BreakfastDatasplit(Datasplit):
                         self._videos_by_task[task] = {}
                     assert video.name not in self._videos_by_task[task]
                     self._videos_by_task[task][video.name] = video
-                    video_names.add(video)
+                    video_names.add(video.name)
                     # accumulate statistic for inverse counts vector for each video
                     gt_stat.update(labels_t[0] for labels_t in self.groundtruth.gt_by_task[task][gt_name])
 

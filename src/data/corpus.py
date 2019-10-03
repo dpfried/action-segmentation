@@ -123,11 +123,24 @@ class Video(object):
 
     def gt(self):
         self._check_truncation()
-        return self._gt[:self.n_frames()]
+        if self._remove_background:
+            tnb = self._truncated_nonbackground_timesteps()
+            gt = self._gt_with_background[:self.n_frames()]
+            new_gt = []
+            for ix in tnb:
+                new_gt.append(gt[ix])
+            gt = new_gt
+            assert len(gt) == len(tnb)
+        else:
+            gt = self._gt[:self.n_frames()]
+        return gt
 
     def gt_with_background(self):
         self._check_truncation()
         return self._gt_with_background[:self.n_frames()]
+
+    def _truncated_nonbackground_timesteps(self):
+        return [t for t in self._nonbackground_timesteps if t < self.n_frames()]
 
     def _process_features(self, features):
         if self._n_frames is None:
@@ -143,8 +156,7 @@ class Video(object):
         # self._gt_with_background = self._gt_with_background[zeros:]
         features = features[:self.n_frames()]
         if self._remove_background:
-            nbs = [t for t in self._nonbackground_timesteps if t < self.n_frames()]
-            features = features[nbs]
+            features = features[self._truncated_nonbackground_timesteps()]
         return features
 
     # def _init_z_framewise(self):

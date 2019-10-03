@@ -90,8 +90,6 @@ class FramewiseDiscriminative(Model):
             #     log_str += ("\ttrain mof: {:.4f}".format(train_mof))
             #     log_str += ("\tdev mof: {:.4f}".format(dev_mof))
 
-
-
     def predict(self, test_data: Datasplit):
         self.model.eval()
         predictions = {}
