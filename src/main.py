@@ -50,9 +50,10 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
 
     def evaluate_on_data(data, name):
         stats_by_name = test(model, data, name, verbose=verbose, optimal_assignment=optimal_assignment)
-        assert len(stats_by_name) == 1
-        stats = next(iter(stats_by_name.values()))
-        right, total = stats['mof']
+
+        all_mof = np.array([stats['mof'] for stats in stats_by_name.values()])
+        sum_mof = all_mof.sum(axis=0)
+        right, total = sum_mof
         return float(right) / total
 
     models_by_epoch = {}

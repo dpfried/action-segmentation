@@ -6,13 +6,15 @@
 __author__ = 'Anna Kukleva'
 __date__ = 'November 2018'
 
+import sys
+
 
 import logging
 
 logger = logging.getLogger('basic')
 logger.setLevel(logging.DEBUG)
 
-ch = logging.StreamHandler()
+ch = logging.StreamHandler(sys.stdout)
 ch.setLevel(logging.DEBUG)
 
 # formatter = logging.Formatter('%(asctime)s - %(levelno)s - %(filename)s - '
