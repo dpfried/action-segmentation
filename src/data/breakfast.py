@@ -7,29 +7,59 @@ import numpy as np
 
 from collections import Counter
 
-from data.corpus import Corpus, GroundTruth, Video
+from data.corpus import Corpus, GroundTruth, Video, Datasplit
 from utils.logger import logger
+from utils.utils import all_equal
 
-class BreakfastCorpus(Corpus):
 
-    TASKS = [
-        'coffee', 'cereals', 'tea', 'milk', 'juice', 'sandwich', 'scrambledegg', 'friedegg', 'salat', 'pancake'
-    ]
+class BreakfastDatasplit(Datasplit):
+    def __init__(self, corpus, remove_background, task_filter=None, heldout_split=None, full=True):
+        self._heldout_split = heldout_split
+        self._tasks = BreakfastCorpus.TASKS[:] if task_filter is None else task_filter
+        self._p_files = []
+        # split
+        assert heldout_split is None or heldout_split in BreakfastCorpus.DATASPLITS
 
-    def __init__(self, feature_root, label_root, remove_background, full=True):
-        self._feature_root = feature_root
-        self._label_root = label_root
-        self._task_names = BreakfastCorpus.TASKS
-        super(BreakfastCorpus, self).__init__(BreakfastCorpus.TASKS, remove_background=remove_background, full=full)
+        for split, p_files in sorted(BreakfastCorpus.DATASPLITS.items()):
+            if split != heldout_split:
+                assert len(set(p_files) & set(self._p_files)) == 0, "{} : {}".format(set(p_files), set(self._p_files))
+                self._p_files.extend(p_files)
+
+        super(BreakfastDatasplit, self).__init__(corpus,
+                                                 remove_background=remove_background,
+                                                 full=full)
+
+    def _load_ground_truth_and_videos(self, remove_background):
+        self.groundtruth = BreakfastGroundTruth(
+            self._corpus,
+            task_names=self._tasks,
+            p_files=self._p_files,
+            remove_background=remove_background,
+        )
+
+        k_by_task = {}
+        for task, gts in self.groundtruth.gt_by_task.items():
+            uniq_labels = set()
+            for filename, labels in gts.items():
+                uniq_labels = uniq_labels.union(labels_t[0] for labels_t in labels)
+            assert -1 not in uniq_labels
+            # if -1 in uniq_labels:
+            #     k_by_task[task] = len(uniq_labels) - 1
+            # else:
+            #     k_by_task[task] = len(uniq_labels)
+            k_by_task[task] = len(uniq_labels)
+        self._K_by_task = k_by_task
+        self._init_videos()
 
     def _init_videos(self):
         # TODO: move to super class?
         gt_stat = Counter()
-        for root, dirs, files in os.walk(self._feature_root):
+        video_names = set()
+        for root, dirs, files in os.walk(self._corpus._feature_root):
             if files:
                 for filename in files:
                     matching_tasks = [
-                        task for task in self._task_names if task in filename
+                        task for task in self._tasks if task in filename
                     ]
                     assert len(matching_tasks) <= 1, "{} matched by {}".format(filename, matching_tasks)
                     if not matching_tasks:
@@ -37,20 +67,28 @@ class BreakfastCorpus(Corpus):
                     task = matching_tasks[0]
                     match = re.match(r'(\w*)\.\w*', filename)
                     gt_name = match.group(1)
-                    if gt_name not in self.gt_map.gt_by_task[task]:
+                    p_name = gt_name.split('_')[0]
+                    if p_name not in self._p_files:
+                        continue
+                    if gt_name not in self.groundtruth.gt_by_task[task]:
                         print("skipping video {} for which no ground truth found!".format(gt_name))
                         continue
                     if not self._full and len(self._videos_by_task[task]) > 10:
                         continue
                     # use extracted features from pretrained on gt embedding
                     # path = os.path.join(root, filename)
+                    if self._remove_background:
+                        nonbackground_timesteps = self.groundtruth.nonbackground_timesteps_by_task[task][gt_name]
+                    else:
+                        nonbackground_timesteps = None
                     video = BreakfastVideo(
                         # path,
                         root,
                         remove_background=self._remove_background,
+                        nonbackground_timesteps=nonbackground_timesteps,
                         K=self._K_by_task[task],
-                        gt=self.gt_map.gt_by_task[task][gt_name],
-                        gt_with_background=self.gt_map.gt_with_background_by_task[task][gt_name],
+                        gt=self.groundtruth.gt_by_task[task][gt_name],
+                        gt_with_background=self.groundtruth.gt_with_background_by_task[task][gt_name],
                         name=gt_name
                     )
                     # self._features = join_data(self._features, video.features(),
@@ -61,8 +99,13 @@ class BreakfastCorpus(Corpus):
                         self._videos_by_task[task] = {}
                     assert video.name not in self._videos_by_task[task]
                     self._videos_by_task[task][video.name] = video
+                    video_names.add(video)
                     # accumulate statistic for inverse counts vector for each video
-                    gt_stat.update(labels_t[0] for labels_t in self.gt_map.gt_by_task[task][gt_name])
+                    gt_stat.update(labels_t[0] for labels_t in self.groundtruth.gt_by_task[task][gt_name])
+
+        logger.debug(
+            "{} tasks found with tasks {}, p_files {}".format(len(self._videos_by_task), self._tasks, self._p_files))
+        logger.debug("{} videos found with tasks {}, p_files {}".format(len(video_names), self._tasks, self._p_files))
 
         # # update global range within the current collection for each video
         # for video in self._videos:
@@ -81,39 +124,59 @@ class BreakfastCorpus(Corpus):
     #     else:
     #         self._total_fg_mask = np.ones(len(self._features), dtype=bool)
 
-    def _load_ground_truth_and_videos(self, remove_background):
-        self.gt_map = BreakfastGroundTruth(
-            label_root=self._label_root,
-            task_names=self._task_names,
-            remove_background=remove_background
-        )
 
-        K_by_task = {}
-        for task, gts in self.gt_map.gt_by_task.items():
-            uniq_labels = set()
-            for filename, labels in gts.items():
-                uniq_labels = uniq_labels.union(labels_t[0] for labels_t in labels)
-            assert -1 not in uniq_labels
-            # if -1 in uniq_labels:
-            #     K_by_task[task] = len(uniq_labels) - 1
-            # else:
-            #     K_by_task[task] = len(uniq_labels)
-            K_by_task[task] = len(uniq_labels)
-        self._K_by_task = K_by_task
-        self._init_videos()
+
+class BreakfastCorpus(Corpus):
+    BACKGROUND_LABEL = "SIL"
+
+    TASKS = [
+        'coffee', 'cereals', 'tea', 'milk', 'juice', 'sandwich', 'scrambledegg', 'friedegg', 'salat', 'pancake'
+    ]
+
+    DATASPLITS = {
+        's1': ["P{:02d}".format(d) for d in range(3, 16)],
+        's2': ["P{:02d}".format(d) for d in range(16, 29)],
+        's3': ["P{:02d}".format(d) for d in range(29, 42)],
+        's4': ["P{:02d}".format(d) for d in range(42, 55)],
+    }
+    assert all_equal(len(v) for v in DATASPLITS.values())
+
+    def __init__(self, mapping_file, feature_root, label_root):
+        self._mapping_file = mapping_file
+        self._feature_root = feature_root
+        self._label_root = label_root
+        super(BreakfastCorpus, self).__init__(background_label=self.BACKGROUND_LABEL)
+
+    def _load_mapping(self):
+        with open(self._mapping_file, 'r') as f:
+            for line in f:
+                index, label = line.strip().split()
+                index = int(index)
+                _index = self._index(label)
+                if label == self._background_label:
+                    assert index == self._background_index
+                if index == self._background_index:
+                    assert label == self._background_label
+                assert _index == index
+
+    def get_datasplit(self, remove_background, task_filter=None, heldout_split=None, full=True):
+        return BreakfastDatasplit(self, remove_background, task_filter=task_filter, heldout_split=heldout_split, full=full)
 
 
 class BreakfastGroundTruth(GroundTruth):
-    BACKGROUND_LABEL = "SIL"
 
-    def __init__(self, label_root, task_names, remove_background):
-        self._label_root = label_root
-        super(BreakfastGroundTruth, self).__init__(task_names, remove_background, background_label=BreakfastGroundTruth.BACKGROUND_LABEL)
+    def __init__(self, corpus, task_names, p_files, remove_background):
+        self._p_files = set(p_files)
+        super(BreakfastGroundTruth, self).__init__(corpus, task_names, remove_background)
 
     def _load_gt(self):
-        for root, dirs, files in os.walk(self._label_root):
+        annotation_count = 0
+        for root, dirs, files in os.walk(self._corpus._label_root):
             for filename in files:
                 if not filename.endswith(".txt"):
+                    continue
+                p_file = filename.split('_')[0]
+                if p_file not in self._p_files:
                     continue
                 matching_tasks = [
                     task for task in self._task_names if task in filename
@@ -132,14 +195,16 @@ class BreakfastGroundTruth(GroundTruth):
                         start = int(match.group(1))
                         end = int(match.group(2))
                         if end < start:
-                            assert match.group(3) == self.BACKGROUND_LABEL
+                            assert match.group(3) == self._corpus.BACKGROUND_LABEL
                             continue
                         assert start > len(gt) - 1
                         label = match.group(3)
-                        label_idx = self._index(label)
+                        label_idx = self._corpus._index(label)
                         # gt should be a list of lists, since other corpora can have multiple labels per timestep
                         gt += [[label_idx]] * (end - start + 1)
                         order.append((label_idx, start, end))
+
+                annotation_count += 1
 
                 # ** get vid_name to match feature names **
                 up_to_cam, cam_name = os.path.split(root)
@@ -157,6 +222,7 @@ class BreakfastGroundTruth(GroundTruth):
                     index = 0
 
                 # skip videos for which the length of the features and the labels differ by more than 50
+                # TODO: get the processed version of the data that fixes this!
                 if (gt_name, cam_name) in [
                     ("P51_coffee", "webcam01"),
                     ("P34_coffee", "cam01"),
@@ -170,7 +236,7 @@ class BreakfastGroundTruth(GroundTruth):
                 ]:
                     continue
 
-                vid_name =  "{}_{}_{}".format(p_name, cam_name, gt_name)
+                vid_name = "{}_{}_{}".format(p_name, cam_name, gt_name)
 
                 if task not in self.order_by_task:
                     self.order_by_task[task] = {}
@@ -179,6 +245,7 @@ class BreakfastGroundTruth(GroundTruth):
 
                 self.gt_by_task[task][vid_name] = gt
                 self.order_by_task[task][vid_name] = order
+        logger.debug("{} annotation files found".format(annotation_count))
 
     # def _load_gt(self):
     #     self.gt, self.order = {}, {}

@@ -29,6 +29,8 @@ class F1Score:
         self._n_true_seg_all = 0
 
     def set_gt(self, gt):
+        assert isinstance(gt, list) and isinstance(gt[0], list)
+        gt = [gt_t[0] for gt_t in gt]
         self.gt = np.asarray(gt)
         self.mask = np.zeros(self.gt.shape, dtype=bool)
 

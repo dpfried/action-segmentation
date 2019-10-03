@@ -1,14 +1,9 @@
 # modified from slim_mallow by Anna Kukleva, https://github.com/Annusha/slim_mallow
 
-import os
 import numpy as np
-import pickle
 import copy
-import math
 import torch
 from torch.utils.data import Dataset
-
-from collections import Counter
 
 from utils.logger import logger
 
@@ -20,6 +15,7 @@ from evaluation.f1 import F1Score
 FEATURE_LABEL_MISMATCH_TOLERANCE = 50
 
 WARN_ON_MISMATCH = False
+
 
 class Video(object):
     def __init__(self, feature_root, K, remove_background, *, nonbackground_timesteps=None,
@@ -109,7 +105,7 @@ class Video(object):
         if not self._updated_length and len(self._gt) != n_frames:
             self._updated_length = True
             if WARN_ON_MISMATCH:
-                print(self.path, '# of gt and # of frames does not match %d / %d' %
+                print(self.name, '# of gt and # of frames does not match %d / %d' %
                       (len(self._gt), n_frames))
 
             assert len(self._gt) - n_frames <= FEATURE_LABEL_MISMATCH_TOLERANCE, "len(self._gt) = {}, n_frames = {}".format(len(self._gt), n_frames)
@@ -140,7 +136,8 @@ class Video(object):
         # self._gt_with_background = self._gt_with_background[zeros:]
         features = features[:self.n_frames()]
         if self._remove_background:
-            features = features[self._nonbackground_timesteps[:self.n_frames()]]
+            nbs = [t for t in self._nonbackground_timesteps if t < self.n_frames()]
+            features = features[nbs]
         return features
 
     # def _init_z_framewise(self):
@@ -196,108 +193,9 @@ class Video(object):
     #     assert len(self._z) == self.n_frames
     #     return np.asarray(self._z_idx)
 
-class GroundTruth(object):
-    def __init__(self, task_names, remove_background, background_label):
-        self._task_names = task_names
-        self._remove_background = remove_background
-        self.label2index = {}
-        self.index2label = {}
-
-        self.gt_by_task = {}
-        self.gt_with_background_by_task = {}
-        self.order_by_task = {}
-        self.order_with_background_by_task = {}
-
-        self.indices_by_task = None
-
-        self.nonbackground_timesteps_by_task = {}
-
-        self._background_label = background_label
-        self._background_index = 0
-        self.label2index[self._background_label] = self._background_index
-        self.index2label[self._background_index] = self._background_label
-        self.load_mapping()
-
-    def _index(self, label):
-        if label not in self.label2index:
-            label_idx = len(self.label2index)
-            self.label2index[label] = label_idx
-            self.index2label[label_idx] = label
-        else:
-            label_idx = self.label2index[label]
-        return label_idx
-
-    def _load_gt(self):
-        raise NotImplementedError("_load_gt")
-
-    def remove_background(self):
-        self.gt_with_background_by_task = copy.deepcopy(self.gt_by_task)
-        self.order_with_background_by_task = copy.deepcopy(self.order_by_task)
-
-        def nonbkg_indices(task, video, gt):
-            return [t for t, gt_t in enumerate(gt) if gt_t[0] != self._background_index]
-
-        self.nonbackground_timesteps_by_task = nested_dict_map(self.gt_by_task, nonbkg_indices)
-
-        def rm_bkg_from_indices(task, video, gt):
-            nonbackground_indices = self.nonbackground_timesteps_by_task[task][video]
-            nbi_set = set(nonbackground_indices)
-            new_gt = []
-            for ix, val in enumerate(gt):
-                if ix in nbi_set:
-                    new_gt.append(val)
-            gt = new_gt
-            # if value[0] == 0:
-            #     for idx, val in enumerate(value):
-            #         if val:
-            #             value[:idx] = val
-            #             break
-            # if value[-1] == 0:
-            #     for idx, val in enumerate(np.flip(value, 0)):
-            #         if val:
-            #             value[-idx:] = val
-            #             break
-            assert self._background_index not in gt
-            return gt
-
-        def rm_bkg_from_order(task, video, order):
-            return [t for t in order if t[0] != self._background_index]
-
-        self.gt_by_task = nested_dict_map(self.gt_by_task, rm_bkg_from_indices)
-        self.order_by_task = nested_dict_map(self.order_by_task, rm_bkg_from_order)
-
-    # def sparse_gt(self):
-    #     for key, val in self.gt.items():
-    #         sparse_segm = [i for i in val[::10]]
-    #         self.gt[key] = sparse_segm
-    #     self.gt_with_background = copy.deepcopy(self.gt)
-
-    def load_mapping(self):
-        self._load_gt()
-        self.gt_with_background_by_task = self.gt_by_task
-        # print(list(gt_with_0.keys()))
-        self.order_with_background_by_task = self.order_by_task
-
-        if self._remove_background:
-            self.remove_background()
-
-        self.indices_by_task = {}
-        for task, gt_dict in self.gt_by_task.items():
-            label_set = set()
-            for vid, gt in gt_dict.items():
-                for gt_t in gt:
-                    label_set.update(gt_t)
-            self.indices_by_task[task] = list(sorted(label_set))
-
-class Corpus(Dataset):
-
-    def __init__(self, task_names, remove_background, full=True):
-        """
-        Args:
-            K: number of possible subactions in current dataset (TODO: this disappeared)
-            subaction: current name of complex activity
-        """
-        self._task_names = task_names
+class Datasplit(Dataset):
+    def __init__(self, corpus, remove_background, full=True):
+        self._corpus = corpus
         self._remove_background = remove_background
         self._full = full
 
@@ -318,10 +216,10 @@ class Corpus(Dataset):
         self._features_by_task = None
         self._embedded_feat = None
 
-        self.gt_map = None
+        self.groundtruth = None
         self._K_by_task = None
         self._load_ground_truth_and_videos(remove_background)
-        assert self.gt_map is not None, "_load_ground_truth_and_videos didn't set gt_map"
+        assert self.groundtruth is not None, "_load_ground_truth_and_videos didn't set groundtruth"
         assert len(self._videos_by_task) != 0, "_load_ground_truth_and_videos didn't load any task's videos"
         assert self._K_by_task is not None, "_load_ground_truth_and_videos didn't set _K_by_task"
 
@@ -343,12 +241,17 @@ class Corpus(Dataset):
         task_name, video_name = self._tasks_and_video_names[index]
         video_obj: Video = self._videos_by_task[task_name][video_name]
         features = video_obj.features()
+        torch_features = torch.from_numpy(features).float()
+        # num_timesteps = torch_features.size(0)
+        task_indices = torch.LongTensor(sorted(self.groundtruth._indices_by_task[task_name]))
         data = {
             'task_name': task_name,
             'video_name': video_name,
-            'features': torch.from_numpy(features).float(),
+            'features': torch_features,
             'gt': video_obj.gt(),
+            'gt_single': torch.LongTensor([gt_t[0] for gt_t in video_obj.gt()]),
             'gt_with_background': video_obj.gt_with_background(),
+            'task_indices': task_indices,
         }
         return data
 
@@ -359,16 +262,11 @@ class Corpus(Dataset):
     def _load_ground_truth_and_videos(self, remove_background):
         raise NotImplementedError("subclasses should implement _load_ground_truth")
 
-    # def _count_subact(self):
-    #     self._subact_counter = np.zeros(self._K)
-    #     for video in self._videos:
-    #         self._subact_counter += video.a
-
-    def accuracy_corpus(self, prefix=''):
+    def accuracy_corpus(self, optimal_assignment: bool, prediction_function, prefix=''):
         """Calculate metrics as well with previous correspondences between
         gt labels and output labels"""
         accuracies_by_task = {}
-        for task in self._task_names:
+        for task in self._videos_by_task:
             accuracy = Accuracy()
             f1_score = F1Score(K=self._K_by_task[task], n_videos=len(self._videos_by_task[task]))
             long_gt = []
@@ -380,7 +278,7 @@ class Corpus(Dataset):
                 # long_gt += list(video._gt_with_0)
                 # long_gt_onhe0 += list(video._gt)
                 long_gt += list(video.gt())
-                long_pr += list(video._z)
+                long_pr += list(prediction_function(video))
 
             accuracy.gt_labels = long_gt
             accuracy.predicted_labels = long_pr
@@ -391,7 +289,7 @@ class Corpus(Dataset):
             #     # enforce to SIL class assign nothing
             #     accuracy.exclude[0] = [-1]
 
-            old_mof, total_fr = accuracy.mof(old_gt2label=self._gt2label)
+            old_mof, total_fr = accuracy.mof(optimal_assignment, old_gt2label=self._gt2label)
             self._gt2label = accuracy._gt2cluster
             self._label2gt = {}
             for key, val in self._gt2label.items():
@@ -420,7 +318,7 @@ class Corpus(Dataset):
                 self.return_stat[key] = val
 
             for video_name, video in self._videos_by_task[task].items():
-                video.segmentation[video.iter] = (video._z, self._label2gt)
+                video.segmentation[video.iter] = (prediction_function(video), self._label2gt)
 
             accuracies_by_task[task] = accuracy.frames()
         return accuracies_by_task
@@ -430,3 +328,125 @@ class Corpus(Dataset):
     #         video.iter = self.iter
     #         video.resume()
     #     self._count_subact()
+
+class Corpus(object):
+
+    def __init__(self, background_label):
+        """
+        Args:
+            K: number of possible subactions in current dataset (TODO: this disappeared)
+            subaction: current name of complex activity
+        """
+        self.label2index = {}
+        self.index2label = {}
+
+        self._background_label = background_label
+        self._background_index = 0
+        self.label2index[self._background_label] = self._background_index
+        self.index2label[self._background_index] = self._background_label
+        self._labels_frozen = False
+        self._load_mapping()
+        self._labels_frozen = True
+
+
+    def _index(self, label):
+        if label not in self.label2index:
+            assert not self._labels_frozen, "trying to index {} after index has been frozen".format(label)
+            label_idx = len(self.label2index)
+            self.label2index[label] = label_idx
+            self.index2label[label_idx] = label
+        else:
+            label_idx = self.label2index[label]
+        return label_idx
+
+    def _load_mapping(self):
+        raise NotImplementedError("subclasses should implement _load_mapping")
+
+    def get_datasplit(self, remove_background, full=True) -> Datasplit:
+        raise NotImplementedError("subclasses should implement get_datasplit")
+
+    # def _count_subact(self):
+    #     self._subact_counter = np.zeros(self._K)
+    #     for video in self._videos:
+    #         self._subact_counter += video.a
+
+
+class GroundTruth(object):
+    def __init__(self, corpus: Corpus, task_names, remove_background):
+        self._corpus = corpus
+        self._task_names = task_names
+        self._remove_background = remove_background
+
+        self.gt_by_task = {}
+        self.gt_with_background_by_task = {}
+        self.order_by_task = {}
+        self.order_with_background_by_task = {}
+
+        self._indices_by_task = None
+
+        self.nonbackground_timesteps_by_task = {}
+        self.load_gt_and_remove_background()
+
+    def _load_gt(self):
+        raise NotImplementedError("_load_gt")
+
+    def load_gt_and_remove_background(self):
+        self._load_gt()
+        self.gt_with_background_by_task = self.gt_by_task
+        # print(list(gt_with_0.keys()))
+        self.order_with_background_by_task = self.order_by_task
+
+        if self._remove_background:
+            self.remove_background()
+
+        self._indices_by_task = {}
+        for task, gt_dict in self.gt_by_task.items():
+            label_set = set()
+            for vid, gt in gt_dict.items():
+                for gt_t in gt:
+                    label_set.update(gt_t)
+            self._indices_by_task[task] = list(sorted(label_set))
+
+    def remove_background(self):
+        self.gt_with_background_by_task = copy.deepcopy(self.gt_by_task)
+        self.order_with_background_by_task = copy.deepcopy(self.order_by_task)
+
+        def nonbkg_indices(task, video, gt):
+            return [t for t, gt_t in enumerate(gt) if gt_t[0] != self._corpus._background_index]
+
+        self.nonbackground_timesteps_by_task = nested_dict_map(self.gt_by_task, nonbkg_indices)
+
+        def rm_bkg_from_indices(task, video, gt):
+            nonbackground_indices = self.nonbackground_timesteps_by_task[task][video]
+            nbi_set = set(nonbackground_indices)
+            new_gt = []
+            for ix, val in enumerate(gt):
+                if ix in nbi_set:
+                    new_gt.append(val)
+            gt = new_gt
+            # if value[0] == 0:
+            #     for idx, val in enumerate(value):
+            #         if val:
+            #             value[:idx] = val
+            #             break
+            # if value[-1] == 0:
+            #     for idx, val in enumerate(np.flip(value, 0)):
+            #         if val:
+            #             value[-idx:] = val
+            #             break
+            assert self._corpus._background_index not in gt
+            return gt
+
+        def rm_bkg_from_order(task, video, order):
+            return [t for t in order if t[0] != self._corpus._background_index]
+
+        self.gt_by_task = nested_dict_map(self.gt_by_task, rm_bkg_from_indices)
+        self.order_by_task = nested_dict_map(self.order_by_task, rm_bkg_from_order)
+
+    # def sparse_gt(self):
+    #     for key, val in self.gt.items():
+    #         sparse_segm = [i for i in val[::10]]
+    #         self.gt[key] = sparse_segm
+    #     self.gt_with_background = copy.deepcopy(self.gt)
+
+

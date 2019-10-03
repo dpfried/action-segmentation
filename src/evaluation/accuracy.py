@@ -71,6 +71,9 @@ class Accuracy(object):
 
     @gt_labels.setter
     def gt_labels(self, labels):
+        # should be nested list
+        assert isinstance(labels, list) and isinstance(labels[0], list)
+        labels = [lab_t[0] for lab_t in labels]
         self._gt_labels = np.array(labels)
         self._gt_labels_subset = self._gt_labels[:]
         self._indices = list(range(len(self._gt_labels)))
@@ -167,14 +170,16 @@ class Accuracy(object):
             x, y = linear_sum_assignment(self._voting_table)
             for idx_gt, idx_pr in zip(x, y):
                 self._gt2cluster[self._gt_index2label[idx_gt]] = [self._pr_index2label[idx_pr]]
-        if method == 'max':
+        elif method == 'max':
             # maximum voting, won't create exactly one-to-one mapping
             max_responses = np.argmax(self._voting_table, axis=0)
             for idx, c in enumerate(max_responses):
                 # c is index of gt label
                 # idx is predicted cluster label
                 self._gt2cluster[self._gt_index2label[c]].append(idx)
-
+        elif method == 'identity':
+            for label in np.unique(self._gt_labels_subset):
+                self._gt2cluster[label] = [label]
 
     def _fulfill_segments(self):
         """If was used frame sampling then anyway we need to get assignment
@@ -187,10 +192,11 @@ class Accuracy(object):
             self._full_predicted_labels += [win_label] * (end - start + 1)
         self._full_predicted_labels = np.asarray(self._full_predicted_labels)
 
-    def mof(self, with_segments=False, old_gt2label=None, optimization='max'):
+    def mof(self, optimal_assignment: bool, with_segments=False, old_gt2label=None, optimization='max'):
         """ Compute mean over frames (MoF) for current labeling.
 
         Args:
+            optimal_assignment: use hungarian to maximize MoF?
             with_segments: if frame sampling was used
             old_gt2label: MoF for given gt <-> output labels correspondences
             optimization: inside hungarian method
@@ -200,8 +206,12 @@ class Accuracy(object):
 
         """
         self._n_clusters = len(np.unique(self._predicted_labels))
-        self._create_voting_table()
-        self._create_correspondences(optimization=optimization)
+        if optimal_assignment:
+            self._create_voting_table()
+            self._create_correspondences(method='hungarian', optimization=optimization)
+        else:
+            self._create_correspondences(method='identity')
+
         self._logger.debug('# gt_labels: %d   # pr_labels: %d' %
                            (len(np.unique(self._gt_labels_subset)),
                             len(np.unique(self._predicted_labels))))
