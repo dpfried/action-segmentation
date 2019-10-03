@@ -154,7 +154,6 @@ if __name__ == "__main__":
         stats_by_task = test(model, test_data, split_name)
         for task, stats in stats_by_task.items():
             stats_by_split_and_task["{}_{}".format(split_name, task)] = stats
-        count += 1
         print()
 
     def divide(d):
