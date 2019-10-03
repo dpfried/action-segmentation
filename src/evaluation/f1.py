@@ -4,13 +4,15 @@ import numpy as np
 
 from utils.logger import logger
 
+
 class F1Score:
-    def __init__(self, K, n_videos):
+    def __init__(self, K, n_videos, verbose=True):
         self.sampling_ratio = 15  # number of frames per segment to sample
         self.n_experiments = 50
         self._K = K  # number of predicted segments per video
         self._n_videos = n_videos
         self._eps = 1e-8
+        self._verbose = verbose
 
         # TODO: update this to allow multiple predicted segments per video
 
@@ -103,7 +105,9 @@ class F1Score:
         for iteration in range(self.n_experiments):
             self._sampling()
         f1_mean = np.mean(self.f1_scores)
-        logger.debug('f1 score: %f' % f1_mean)
+        # TODO: fix f1 computation and output it
+        # if self._verbose:
+            # logger.debug('f1 score: %f' % f1_mean)
         self._n_true_seg_all /= self.n_experiments
         self._return['precision'] = [self._n_true_seg_all, (self._K * self._n_videos)]
         self._return['recall'] = [self._n_true_seg_all, len(self.bound_masks)]

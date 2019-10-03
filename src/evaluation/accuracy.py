@@ -1,10 +1,12 @@
 # modified from slim_mallow by Anna Kukleva, https://github.com/Annusha/slim_mallow
 
-import numpy as np
 from collections import defaultdict, Counter
+
+import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 from utils.logger import logger
+
 
 class Accuracy(object):
     """ Implementation of evaluation metrics for unsupervised learning.
@@ -14,7 +16,7 @@ class Accuracy(object):
     Hence the Hungarian method was used and labeling which gives us
     the best score is used as a result.
     """
-    def __init__(self, n_frames=1):
+    def __init__(self, n_frames=1, verbose=True):
         """
         Args:
             n_frames: frequency of sampling,
@@ -41,6 +43,8 @@ class Accuracy(object):
 
         self._logger = logger
         self._return = {}
+
+        self._verbose = verbose
 
     def _reset(self):
         self._n_clusters = 0
@@ -212,12 +216,13 @@ class Accuracy(object):
         else:
             self._create_correspondences(method='identity')
 
-        self._logger.debug('# gt_labels: %d   # pr_labels: %d' %
-                           (len(np.unique(self._gt_labels_subset)),
-                            len(np.unique(self._predicted_labels))))
-        self._logger.debug('Correspondences: segmentation to gt : '
-                           + str([('%d: %d' % (value[0], key)) for (key, value) in
-                                  sorted(self._gt2cluster.items(), key=lambda x: x[-1])]))
+        if self._verbose:
+            self._logger.debug('# gt_labels: %d   # pr_labels: %d' %
+                               (len(np.unique(self._gt_labels_subset)),
+                                len(np.unique(self._predicted_labels))))
+            self._logger.debug('Correspondences: segmentation to gt : '
+                               + str([('%d: %d' % (value[0], key)) for (key, value) in
+                                      sorted(self._gt2cluster.items(), key=lambda x: x[-1])]))
         if with_segments:
             self._fulfill_segments()
         else:
@@ -227,7 +232,8 @@ class Accuracy(object):
         self._classes_MoF = {}
         self._classes_IoU = {}
         excluded_total = 0
-        logger.debug("exclude: {}".format(self.exclude))
+        if self._verbose:
+            logger.debug("exclude: {}".format(self.exclude))
         for gt_label in np.unique(self._gt_labels):
             true_defined_frame_n = 0.
             union = 0
@@ -263,24 +269,27 @@ class Accuracy(object):
         total = 0
         for key, val in self._classes_MoF.items():
             true_frames, all_frames = val
-            logger.debug('label %d: %f  %d / %d' % (key, true_frames / all_frames,
-                                                    true_frames, all_frames))
+            if self._verbose:
+                logger.debug('label %d: %f  %d / %d' % (key, true_frames / all_frames,
+                                                        true_frames, all_frames))
             average_class_mof += true_frames / all_frames
             total_true += true_frames
             total += all_frames
         average_class_mof /= len(self._classes_MoF)
-        logger.debug('average class mof: %f' % average_class_mof)
         self._return['mof'] = [self._frames_true_pr, self._frames_overall]
         self._return['mof_bg'] = [total_true, total]
-        logger.debug('mof with bg: %f' % (total_true / total))
+        if self._verbose:
+            logger.debug('average class mof: %f' % average_class_mof)
+            logger.debug('mof with bg: %f' % (total_true / total))
 
     def iou_classes(self):
         average_class_iou = 0
         excluded_iou = 0
         for key, val in self._classes_IoU.items():
             true_frames, union = val
-            logger.debug('label %d: %f  %d / %d' % (key, true_frames / union,
-                                                    true_frames, union))
+            if self._verbose:
+                logger.debug('label %d: %f  %d / %d' % (key, true_frames / union,
+                                                        true_frames, union))
             if key not in self.exclude:
                 average_class_iou += true_frames / union
             else:
@@ -289,17 +298,19 @@ class Accuracy(object):
                                   (len(self._classes_IoU) - len(self.exclude))
         average_iou_with_exc = (average_class_iou + excluded_iou) / \
                                len(self._classes_IoU)
-        logger.debug('average IoU: %f' % average_iou_without_exc)
         self._return['iou'] = [average_class_iou,
                                len(self._classes_IoU) - len(self.exclude)]
         self._return['iou_bg'] = [average_class_iou + excluded_iou,
                                   len(self._classes_IoU) - len(self.exclude)]
-        logger.debug('average IoU with bg: %f' % average_iou_with_exc)
+        if self._verbose:
+            logger.debug('average IoU: %f' % average_iou_without_exc)
+            logger.debug('average IoU with bg: %f' % average_iou_with_exc)
 
 
     def mof_val(self):
-        self._logger.debug('frames true: %d\tframes overall : %d' %
-                           (self._frames_true_pr, self._frames_overall))
+        if self._verbose:
+            self._logger.debug('frames true: %d\tframes overall : %d' %
+                               (self._frames_true_pr, self._frames_overall))
         return float(self._frames_true_pr) / self._frames_overall
 
     def frames(self):

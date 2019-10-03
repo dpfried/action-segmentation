@@ -1,17 +1,14 @@
-import re
-import os
+import glob
 import math
+import os
+import pickle
+from collections import namedtuple, defaultdict
+
 import numpy as np
 
-import glob
-
-from collections import namedtuple, defaultdict
 from data.corpus import Corpus, GroundTruth, Video, Datasplit
-
-from utils.logger import logger
 from data.features import grouped_pca
-
-import pickle
+from utils.logger import logger
 
 CrosstaskTask = namedtuple("CrosstaskTask", ["index", "title", "url", "n_steps", "steps"])
 
@@ -123,9 +120,8 @@ def load_videos_by_task(release_root, split='train'):
         return val_videos_by_task
     val_videos = set(v for vids in val_videos_by_task.values() for v in vids)
     train_videos_by_task = {
-        task_index: v for task_index, vids in all_videos_by_task
-        for v in vids
-        if v not in val_videos
+        task_index: [v for v in vids if v not in val_videos]
+        for task_index, vids in all_videos_by_task.items()
     }
 
     assert split == 'train'
@@ -178,18 +174,18 @@ class CrosstaskDatasplit(Datasplit):
         }
 
         assert len(
-            self._video_names_by_task) != 0, "no tasks found with task_sets {}, split {}, and release_directory {}".format(
-            task_sets, split, corpus._release_root
+            self._video_names_by_task) != 0, "no tasks found with task_sets {}, task_ids {}, split {}, and release_directory {}".format(
+            task_sets, task_ids, split, corpus._release_root
         )
 
         video_names = list(sorted(set(video for videos in self._video_names_by_task.values() for video in videos)))
-        assert len(video_names) != 0, "no videos found with task_sets {}, split {}, and release_directory {}".format(
-            task_sets, split, corpus._release_root
+        assert len(video_names) != 0, "no videos found with task_sets {}, task_ids {}, split {}, and release_directory {}".format(
+            task_sets, task_ids, split, corpus._release_root
         )
 
         logger.debug(
-            "{} tasks found with task_sets {}, split {}".format(len(self._video_names_by_task), task_sets, split))
-        logger.debug("{} videos found with task_sets {}, split {}".format(len(video_names), task_sets, split))
+            "{} tasks found with task_sets {}, task_ids {}, split {}".format(len(self._video_names_by_task), task_sets, task_ids, split))
+        logger.debug("{} videos found with task_sets {}, task_ids {}, split {}".format(len(video_names), task_sets, task_ids, split))
 
         self._save_frame_counts = (split == 'all' and set(corpus.TASK_SET_PATHS.keys()) == set(task_sets))
 
@@ -250,6 +246,7 @@ class CrosstaskDatasplit(Datasplit):
                         video] if has_label else None,
                     name=video,
                     has_label=has_label,
+                    cache_features=self._corpus._cache_features,
                 )
 
 

@@ -1,11 +1,10 @@
 # modified from slim_mallow by Anna Kukleva, https://github.com/Annusha/slim_mallow
 
-import re
 import os
+import re
+from collections import Counter
 
 import numpy as np
-
-from collections import Counter
 
 from data.corpus import Corpus, GroundTruth, Video, Datasplit
 from utils.logger import logger
@@ -13,15 +12,17 @@ from utils.utils import all_equal
 
 
 class BreakfastDatasplit(Datasplit):
-    def __init__(self, corpus, remove_background, task_filter=None, heldout_split=None, full=True):
-        self._heldout_split = heldout_split
+    def __init__(self, corpus, remove_background, task_filter=None, splits=None, full=True):
+        if splits is None:
+            splits = list(sorted(BreakfastCorpus.DATASPLITS.keys()))
+        self._splits = splits
         self._tasks = BreakfastCorpus.TASKS[:] if task_filter is None else task_filter
         self._p_files = []
         # split
-        assert heldout_split is None or heldout_split in BreakfastCorpus.DATASPLITS
+        assert all(split in BreakfastCorpus.DATASPLITS for split in splits)
 
         for split, p_files in sorted(BreakfastCorpus.DATASPLITS.items()):
-            if split != heldout_split:
+            if split in splits:
                 assert len(set(p_files) & set(self._p_files)) == 0, "{} : {}".format(set(p_files), set(self._p_files))
                 self._p_files.extend(p_files)
 
@@ -89,7 +90,8 @@ class BreakfastDatasplit(Datasplit):
                         K=self._K_by_task[task],
                         gt=self.groundtruth.gt_by_task[task][gt_name],
                         gt_with_background=self.groundtruth.gt_with_background_by_task[task][gt_name],
-                        name=gt_name
+                        name=gt_name,
+                        cache_features=self._corpus._cache_features,
                     )
                     # self._features = join_data(self._features, video.features(),
                     #                            np.vstack)
@@ -159,8 +161,8 @@ class BreakfastCorpus(Corpus):
                     assert label == self._background_label
                 assert _index == index
 
-    def get_datasplit(self, remove_background, task_filter=None, heldout_split=None, full=True):
-        return BreakfastDatasplit(self, remove_background, task_filter=task_filter, heldout_split=heldout_split, full=full)
+    def get_datasplit(self, remove_background, task_filter=None, splits=None, full=True):
+        return BreakfastDatasplit(self, remove_background, task_filter=task_filter, splits=splits, full=full)
 
 
 class BreakfastGroundTruth(GroundTruth):

@@ -1,16 +1,15 @@
 # modified from slim_mallow by Anna Kukleva, https://github.com/Annusha/slim_mallow
 
-import numpy as np
 import copy
+
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from utils.logger import logger
-
-from utils.utils import nested_dict_map
-
 from evaluation.accuracy import Accuracy
 from evaluation.f1 import F1Score
+from utils.logger import logger
+from utils.utils import nested_dict_map
 
 FEATURE_LABEL_MISMATCH_TOLERANCE = 50
 
@@ -81,7 +80,7 @@ class Video(object):
 
         # self._subact_count_update()
 
-        # self.segmentation = {'gt': (self._gt, None)}
+        self.segmentation = {'gt': (self._gt, None)}
 
     def load_features(self):
         raise NotImplementedError("should be implemented by subclasses")
@@ -99,9 +98,14 @@ class Video(object):
         return self._n_frames
 
     def _check_truncation(self):
-        n_frames = self.n_frames()
         if not self._has_label:
             return
+        n_frames = self.n_frames()
+        if n_frames is None:
+            # TODO: ugh
+            self.features()
+            n_frames = self.n_frames()
+        assert n_frames is not None
         if not self._updated_length and len(self._gt) != n_frames:
             self._updated_length = True
             if WARN_ON_MISMATCH:
@@ -243,7 +247,7 @@ class Datasplit(Dataset):
         features = video_obj.features()
         torch_features = torch.from_numpy(features).float()
         # num_timesteps = torch_features.size(0)
-        task_indices = torch.LongTensor(sorted(self.groundtruth._indices_by_task[task_name]))
+        task_indices = torch.LongTensor(sorted(self.groundtruth.indices_by_task[task_name]))
         data = {
             'task_name': task_name,
             'video_name': video_name,
@@ -262,13 +266,13 @@ class Datasplit(Dataset):
     def _load_ground_truth_and_videos(self, remove_background):
         raise NotImplementedError("subclasses should implement _load_ground_truth")
 
-    def accuracy_corpus(self, optimal_assignment: bool, prediction_function, prefix=''):
+    def accuracy_corpus(self, optimal_assignment: bool, prediction_function, prefix='', verbose=True):
         """Calculate metrics as well with previous correspondences between
         gt labels and output labels"""
-        accuracies_by_task = {}
+        stats_by_task = {}
         for task in self._videos_by_task:
-            accuracy = Accuracy()
-            f1_score = F1Score(K=self._K_by_task[task], n_videos=len(self._videos_by_task[task]))
+            accuracy = Accuracy(verbose=verbose)
+            f1_score = F1Score(K=self._K_by_task[task], n_videos=len(self._videos_by_task[task]), verbose=verbose)
             long_gt = []
             long_pr = []
             # long_gt_onhe0 = []
@@ -298,9 +302,10 @@ class Datasplit(Dataset):
                 except IndexError:
                     pass
             acc_cur = accuracy.mof_val()
-            logger.debug('%sTask: %s' % (prefix, task))
-            logger.debug('%sMoF val: ' % prefix + str(acc_cur))
-            logger.debug('%sprevious dic -> MoF val: ' % prefix + str(float(old_mof) / total_fr))
+            if verbose:
+                logger.debug('%s Task: %s' % (prefix, task))
+                logger.debug('%s MoF val: ' % prefix + str(acc_cur))
+                logger.debug('%s previous dic -> MoF val: ' % prefix + str(float(old_mof) / total_fr))
 
             accuracy.mof_classes()
             accuracy.iou_classes()
@@ -320,8 +325,8 @@ class Datasplit(Dataset):
             for video_name, video in self._videos_by_task[task].items():
                 video.segmentation[video.iter] = (prediction_function(video), self._label2gt)
 
-            accuracies_by_task[task] = accuracy.frames()
-        return accuracies_by_task
+            stats_by_task[task] = accuracy.stat()
+        return stats_by_task
 
     # def resume_segmentation(self):
     #     for video in self._videos:
@@ -331,7 +336,7 @@ class Datasplit(Dataset):
 
 class Corpus(object):
 
-    def __init__(self, background_label):
+    def __init__(self, background_label, cache_features=False):
         """
         Args:
             K: number of possible subactions in current dataset (TODO: this disappeared)
@@ -339,6 +344,8 @@ class Corpus(object):
         """
         self.label2index = {}
         self.index2label = {}
+
+        self._cache_features= cache_features
 
         self._background_label = background_label
         self._background_index = 0
@@ -348,6 +355,10 @@ class Corpus(object):
         self._load_mapping()
         self._labels_frozen = True
 
+
+    @property
+    def n_classes(self):
+        return len(self.label2index)
 
     def _index(self, label):
         if label not in self.label2index:
@@ -382,7 +393,7 @@ class GroundTruth(object):
         self.order_by_task = {}
         self.order_with_background_by_task = {}
 
-        self._indices_by_task = None
+        self.indices_by_task = None
 
         self.nonbackground_timesteps_by_task = {}
         self.load_gt_and_remove_background()
@@ -399,13 +410,13 @@ class GroundTruth(object):
         if self._remove_background:
             self.remove_background()
 
-        self._indices_by_task = {}
+        self.indices_by_task = {}
         for task, gt_dict in self.gt_by_task.items():
             label_set = set()
             for vid, gt in gt_dict.items():
                 for gt_t in gt:
                     label_set.update(gt_t)
-            self._indices_by_task[task] = list(sorted(label_set))
+            self.indices_by_task[task] = list(sorted(label_set))
 
     def remove_background(self):
         self.gt_with_background_by_task = copy.deepcopy(self.gt_by_task)
