@@ -51,10 +51,11 @@ def read_assignment(T, num_steps, path, include_background=False):
     with open(path, 'r') as f:
         for line in f:
             step, start, end = line.strip().split(',')
+            step = int(step)
             start = int(math.floor(float(start)))
             end = int(math.ceil(float(end)))
-            if include_background:
-                step = int(step) - 1
+            if not include_background:
+                step = step - 1
             Y[start:end, step] = 1
     if include_background:
         # turn on the background class (col 0) for any row that has no entries

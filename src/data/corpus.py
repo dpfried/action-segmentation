@@ -86,6 +86,7 @@ class Video(object):
         raise NotImplementedError("should be implemented by subclasses")
 
     def features(self):
+        self._check_truncation()
         if self._cache_features:
             if self._features is None:
                 self._features = self._process_features(self.load_features())
@@ -103,20 +104,22 @@ class Video(object):
         n_frames = self.n_frames()
         if n_frames is None:
             # TODO: ugh
-            self.features()
+            self._process_features(self.load_features())
             n_frames = self.n_frames()
         assert n_frames is not None
-        if not self._updated_length and len(self._gt) != n_frames:
+        if not self._updated_length and len(self._gt_with_background) != n_frames:
             self._updated_length = True
             if WARN_ON_MISMATCH:
                 print(self.name, '# of gt and # of frames does not match %d / %d' %
-                      (len(self._gt), n_frames))
+                      (len(self._gt_with_background), n_frames))
 
-            assert len(self._gt) - n_frames <= FEATURE_LABEL_MISMATCH_TOLERANCE, "len(self._gt) = {}, n_frames = {}".format(len(self._gt), n_frames)
-            min_n = min(len(self._gt), n_frames)
+            assert len(self._gt_with_background) - n_frames <= FEATURE_LABEL_MISMATCH_TOLERANCE, "len(self._gt) = {}, n_frames = {}".format(len(self._gt), n_frames)
+            min_n = min(len(self._gt_with_background), n_frames)
             # self._gt = self._gt[:min_n]
             # self._gt_with_background = self._gt_with_background[:min_n]
             self._n_frames = min_n
+            # invalidate cache
+            self._features = None
 
     def gt(self):
         self._check_truncation()
@@ -124,7 +127,7 @@ class Video(object):
 
     def gt_with_background(self):
         self._check_truncation()
-        return self._gt[:self.n_frames()]
+        return self._gt_with_background[:self.n_frames()]
 
     def _process_features(self, features):
         if self._n_frames is None:
@@ -271,7 +274,7 @@ class Datasplit(Dataset):
         gt labels and output labels"""
         stats_by_task = {}
         for task in self._videos_by_task:
-            accuracy = Accuracy(verbose=verbose)
+            accuracy = Accuracy(verbose=verbose, corpus=self._corpus)
             f1_score = F1Score(K=self._K_by_task[task], n_videos=len(self._videos_by_task[task]), verbose=verbose)
             long_gt = []
             long_pr = []

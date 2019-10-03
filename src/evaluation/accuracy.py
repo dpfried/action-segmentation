@@ -16,7 +16,7 @@ class Accuracy(object):
     Hence the Hungarian method was used and labeling which gives us
     the best score is used as a result.
     """
-    def __init__(self, n_frames=1, verbose=True):
+    def __init__(self, n_frames=1, verbose=True, corpus=None):
         """
         Args:
             n_frames: frequency of sampling,
@@ -24,6 +24,8 @@ class Accuracy(object):
         """
         self._n_frames = n_frames
         self._reset()
+
+        self._corpus = corpus
 
         self._predicted_labels = None
         self._gt_labels_subset = None
@@ -270,8 +272,11 @@ class Accuracy(object):
         for key, val in self._classes_MoF.items():
             true_frames, all_frames = val
             if self._verbose:
-                logger.debug('label %d: %f  %d / %d' % (key, true_frames / all_frames,
-                                                        true_frames, all_frames))
+                log_str = 'mof label %d: %f  %d / %d' % (key, true_frames / all_frames,
+                                                        true_frames, all_frames)
+                if self._corpus is not None:
+                    log_str += '\t[{}]'.format(self._corpus.index2label[key])
+                logger.debug(log_str)
             average_class_mof += true_frames / all_frames
             total_true += true_frames
             total += all_frames
@@ -288,8 +293,10 @@ class Accuracy(object):
         for key, val in self._classes_IoU.items():
             true_frames, union = val
             if self._verbose:
-                logger.debug('label %d: %f  %d / %d' % (key, true_frames / union,
-                                                        true_frames, union))
+                log_str = 'iou label %d: %f  %d / %d' % (key, true_frames / union, true_frames, union)
+                if self._corpus is not None:
+                    log_str += ' [{}]'.format(self._corpus.index2label[key])
+                logger.debug(log_str)
             if key not in self.exclude:
                 average_class_iou += true_frames / union
             else:

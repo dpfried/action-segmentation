@@ -1,3 +1,4 @@
+import tqdm
 import numpy as np
 import torch
 import torch.nn as nn
@@ -62,7 +63,7 @@ class FramewiseDiscriminative(Model):
 
         for epoch in range(self.args.epochs):
             losses = []
-            for batch in loader:
+            for batch in tqdm.tqdm(loader, ncols=80):
                 for sample in batch:
                     task = sample['task_name']
                     video = sample['video_name']
@@ -104,7 +105,11 @@ class FramewiseDiscriminative(Model):
                     task_indices = task_indices.cuda()
                 video = sample['video_name']
                 logits = self.model.forward(features, valid_classes=task_indices)
-                predictions[video] = logits.max(dim=1)[1].squeeze(-1).detach().cpu().numpy()
+                preds = logits.max(dim=1)[1]
+                # handle the edge case where there's only a single instance, in which case preds.size() <= 1
+                if len(preds.size()) > 1:
+                    preds = preds.squeeze(-1)
+                predictions[video] = preds.detach().cpu().numpy()
         return predictions
 
 
