@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from train.train import Model, make_optimizer, make_data_loader
+from models.model import Model, make_optimizer, make_data_loader
 
 from data.corpus import Datasplit
 
