@@ -269,6 +269,11 @@ class Accuracy(object):
         average_class_mof = 0
         total_true = 0
         total = 0
+
+        average_class_mof_non_bkg = 0
+        total_true_non_bkg = 0
+        total_non_bkg = 0
+        non_bkg_classes = 0
         for key, val in self._classes_MoF.items():
             true_frames, all_frames = val
             if self._verbose:
@@ -280,12 +285,21 @@ class Accuracy(object):
             average_class_mof += true_frames / all_frames
             total_true += true_frames
             total += all_frames
+            if key != self._corpus._background_index:
+                non_bkg_classes += 1
+                average_class_mof_non_bkg += true_frames / all_frames
+                total_true_non_bkg += true_frames
+                total_non_bkg += all_frames
         average_class_mof /= len(self._classes_MoF)
+        average_class_mof_non_bkg /= non_bkg_classes
         self._return['mof'] = [self._frames_true_pr, self._frames_overall]
         self._return['mof_bg'] = [total_true, total]
+        self._return['mof_non_bg'] = [total_true_non_bkg, total_non_bkg]
         if self._verbose:
             logger.debug('average class mof: %f' % average_class_mof)
             logger.debug('mof with bg: %f' % (total_true / total))
+            logger.debug('average class mof without bg: %f' % average_class_mof_non_bkg)
+            logger.debug('mof without bg: %f' % (total_true_non_bkg / total_non_bkg))
 
     def iou_classes(self):
         average_class_iou = 0

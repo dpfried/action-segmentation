@@ -256,19 +256,27 @@ class Datasplit(Dataset):
     def __len__(self):
         return len(self._tasks_and_video_names)
 
-    def __getitem__(self, index):
+    def __getitem__(self, index, wrap_torch=True):
         task_name, video_name = self._tasks_and_video_names[index]
         video_obj: Video = self._videos_by_task[task_name][video_name]
-        features = video_obj.features()
-        torch_features = torch.from_numpy(features).float()
+
         # num_timesteps = torch_features.size(0)
-        task_indices = torch.LongTensor(sorted(self.groundtruth.indices_by_task[task_name]))
+        features = video_obj.features()
+        task_indices = sorted(self.groundtruth.indices_by_task[task_name])
+        gt_single = [gt_t[0] for gt_t in video_obj.gt()]
+
+        if wrap_torch:
+            features = torch.from_numpy(features).float()
+            task_indices = torch.LongTensor(task_indices)
+            gt_single = torch.LongTensor(gt_single)
+        else:
+            task_indices = list(task_indices)
         data = {
             'task_name': task_name,
             'video_name': video_name,
-            'features': torch_features,
+            'features': features,
             'gt': video_obj.gt(),
-            'gt_single': torch.LongTensor([gt_t[0] for gt_t in video_obj.gt()]),
+            'gt_single': gt_single,
             'gt_with_background': video_obj.gt_with_background(),
             'task_indices': task_indices,
         }

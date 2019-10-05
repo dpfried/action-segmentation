@@ -75,9 +75,12 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
 
     model.fit(train_data, callback_fn)
 
-    best_dev_epoch, best_dev_mof = max(dev_mof_by_epoch.items(), key=lambda t: t[1])
-    logger.debug("best dev mov {:.4f} in epoch {}".format(best_dev_mof, best_dev_epoch))
-    return pickle.loads(models_by_epoch[best_dev_epoch])
+    if dev_mof_by_epoch:
+        best_dev_epoch, best_dev_mof = max(dev_mof_by_epoch.items(), key=lambda t: t[1])
+        logger.debug("best dev mov {:.4f} in epoch {}".format(best_dev_mof, best_dev_epoch))
+        return pickle.loads(models_by_epoch[best_dev_epoch])
+    else:
+        return model
 
 
 def make_data_splits(args):
@@ -89,7 +92,7 @@ def make_data_splits(args):
         if args.features == 'pca':
             max_components = 200
             assert args.pca_components_per_group <= max_components
-            feature_root = 'data/crosstask_primary_pca-{}_with-bkg_by-task'.format(max_components)
+            feature_root = 'data/crosstask/crosstask_processed/crosstask_primary_pca-{}_with-bkg_by-task'.format(max_components)
             dimensions_per_feature_group = {
                 feature_group: args.pca_components_per_group
                 for feature_group in args.crosstask_feature_groups

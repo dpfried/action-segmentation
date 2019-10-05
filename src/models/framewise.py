@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from models.model import Model, make_optimizer, make_data_loader
+from sklearn.mixture import GaussianMixture
 
 from data.corpus import Datasplit
 
@@ -111,17 +112,66 @@ class FramewiseDiscriminative(Model):
         return predictions
 
 
+def get_diagonal_precisions_cholesky(data):
+    # data: num_points x feat_dim
+    model = GaussianMixture(n_components=1, covariance_type='diag')
+    responsibilities = np.ones((data.shape[0], 1))
+    model._initialize(data, responsibilities)
+    return model.precisions_cholesky_
+
 class FramewiseGaussianMixture(Model):
     @classmethod
     def add_args(cls, parser):
-        pass
+        parser.add_argument('--gm_covariance', choices=['full', 'diag', 'tied', 'tied_diag'], default='tied_diag')
 
     @classmethod
     def from_args(cls, args, train_data):
-        pass
+        n_classes = train_data._corpus.n_classes
+        feature_dim = train_data.feature_dim
+        return FramewiseGaussianMixture(args, n_classes, feature_dim)
 
-    def fit(self, train_data, dev_data):
-        pass
+    def __init__(self, args, n_classes, feature_dim):
+        self.args = args
+        self.n_classes = n_classes
+        self.feature_dim = feature_dim
+        self.model = None
+
+    def fit(self, train_data: Datasplit, callback_fn=None):
+        tied_diag = self.args.gm_covariance == 'tied_diag'
+        if tied_diag:
+            model = GaussianMixture(self.n_classes, covariance_type='diag')
+        else:
+            model = GaussianMixture(self.n_classes, covariance_type=self.args.gm_covariance)
+        X_l = []
+        r_l = []
+        for i in tqdm.tqdm(list(range(len(train_data))), ncols=80):
+            sample = train_data.__getitem__(i, wrap_torch=False)
+            X = sample['features']
+            X_l.append(X)
+            r = np.zeros((X.shape[0], self.n_classes))
+            r[np.arange(X.shape[0]), sample['gt_single']] = 1
+            assert r.sum() == X.shape[0]
+            r_l.append(r)
+        X_arr = np.vstack(X_l)
+        r_arr = np.vstack(r_l)
+        model._initialize(X_arr, r_arr)
+        if tied_diag:
+            model.precisions_cholesky_[:] = np.copy(get_diagonal_precisions_cholesky(X_arr))
+        self.model = model
 
     def predict(self, test_data):
-        pass
+        assert self.model is not None
+        predictions = {}
+        for i in tqdm.tqdm(list(range(len(test_data))), ncols=80):
+            sample = test_data.__getitem__(i, wrap_torch=False)
+            X = sample['features']
+            mask_indices = list(set(range(self.n_classes)) - set(sample['task_indices']))
+            if mask_indices:
+                probs = self.model.predict_proba(X)
+                probs[:, mask_indices] = 0
+                probs /= probs.sum(axis=1)[:,None]
+                preds = probs.argmax(axis=1)
+            else:
+                preds = self.model.predict(X)
+            predictions[sample['video_name']] = preds
+        return predictions
