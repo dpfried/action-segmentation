@@ -1,6 +1,8 @@
 import torch.optim
 from torch.utils.data import DataLoader
 
+from data.corpus import Datasplit
+
 
 def add_training_args(parser):
     parser.add_argument('--epochs', type=int, default=20)
@@ -25,7 +27,7 @@ def make_data_loader(args, corpus, shuffle, batch_size=1):
 
 
 class Model(object):
-    def fit(self, train_data, callback_fn=None):
+    def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
         raise NotImplementedError()
 
     def predict(self, test_data):

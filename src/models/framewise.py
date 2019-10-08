@@ -56,7 +56,8 @@ class FramewiseDiscriminative(Model):
         if args.cuda:
             self.model.cuda()
 
-    def fit(self, train_data: Datasplit, callback_fn=None):
+    def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
+        assert use_labels
         loss = nn.CrossEntropyLoss()
         self.model.train()
         optimizer = make_optimizer(self.args, self.model.parameters())
@@ -136,7 +137,8 @@ class FramewiseGaussianMixture(Model):
         self.feature_dim = feature_dim
         self.model = None
 
-    def fit(self, train_data: Datasplit, callback_fn=None):
+    def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
+        assert use_labels
         tied_diag = self.args.gm_covariance == 'tied_diag'
         if tied_diag:
             model = GaussianMixture(self.n_classes, covariance_type='diag')

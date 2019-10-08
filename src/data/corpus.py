@@ -253,6 +253,14 @@ class Datasplit(Dataset):
         #               np.max(self._features),
         #               np.mean(self._features)))
 
+    @property
+    def corpus(self):
+        return self._corpus
+
+    @property
+    def remove_background(self):
+        return self._remove_background
+
     def __len__(self):
         return len(self._tasks_and_video_names)
 

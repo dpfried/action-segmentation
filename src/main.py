@@ -11,11 +11,13 @@ from data.corpus import Datasplit
 from data.crosstask import CrosstaskCorpus
 from models.framewise import FramewiseGaussianMixture, FramewiseDiscriminative
 from models.model import Model, add_training_args
+from models.semimarkov import SemiMarkovModel
 from utils.logger import logger
 
 CLASSIFIERS = {
     'framewise_discriminative': FramewiseDiscriminative,
     'framewise_gaussian_mixture': FramewiseGaussianMixture,
+    'semimarkov': SemiMarkovModel,
 }
 
 
@@ -30,12 +32,18 @@ def add_data_args(parser):
 
 def add_classifier_args(parser):
     parser.add_argument('--classifier', required=True, choices=CLASSIFIERS.keys())
+    parser.add_argument('--training', choices=['supervised', 'unsupervised'], default='supervised')
     parser.add_argument('--cuda', action='store_true')
     for name, cls in CLASSIFIERS.items():
         cls.add_args(parser)
 
 
-def test(model: Model, test_data: Datasplit, test_data_name: str, verbose=True, optimal_assignment=True):
+def test(model: Model, test_data: Datasplit, test_data_name: str, verbose=True):
+    if args.training == 'supervised':
+        optimal_assignment = False
+    else:
+        assert args.training == 'unsupervised'
+        optimal_assignment = True
     predictions_by_video = model.predict(test_data)
     prediction_function = lambda video: predictions_by_video[video.name]
     stats = test_data.accuracy_corpus(optimal_assignment,
@@ -45,11 +53,17 @@ def test(model: Model, test_data: Datasplit, test_data_name: str, verbose=True, 
     return stats
 
 
-def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=False, optimal_assignment=True):
+def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=False):
     model = CLASSIFIERS[args.classifier].from_args(args, train_data)
 
+    if args.training == 'supervised':
+        use_labels = True
+    else:
+        assert args.training == 'unsupervised'
+        use_labels = False
+
     def evaluate_on_data(data, name):
-        stats_by_name = test(model, data, name, verbose=verbose, optimal_assignment=optimal_assignment)
+        stats_by_name = test(model, data, name, verbose=verbose)
 
         all_mof = np.array([stats['mof'] for stats in stats_by_name.values()])
         sum_mof = all_mof.sum(axis=0)
@@ -73,7 +87,7 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
         models_by_epoch[epoch] = pickle.dumps(model)
         dev_mof_by_epoch[epoch] = dev_mof
 
-    model.fit(train_data, callback_fn)
+    model.fit(train_data, use_labels=use_labels, callback_fn=callback_fn)
 
     if dev_mof_by_epoch:
         best_dev_epoch, best_dev_mof = max(dev_mof_by_epoch.items(), key=lambda t: t[1])
@@ -92,7 +106,8 @@ def make_data_splits(args):
         if args.features == 'pca':
             max_components = 200
             assert args.pca_components_per_group <= max_components
-            feature_root = 'data/crosstask/crosstask_processed/crosstask_primary_pca-{}_with-bkg_by-task'.format(max_components)
+            feature_root = 'data/crosstask/crosstask_processed/crosstask_primary_pca-{}_with-bkg_by-task'.format(
+                max_components)
             dimensions_per_feature_group = {
                 feature_group: args.pca_components_per_group
                 for feature_group in args.crosstask_feature_groups
@@ -160,12 +175,14 @@ if __name__ == "__main__":
             stats_by_split_and_task["{}_{}".format(split_name, task)] = stats
         print()
 
+
     def divide(d):
         divided = {}
         for key, vals in d.items():
             assert len(vals) == 2
             divided[key] = float(vals[0]) / vals[1]
         return divided
+
 
     print()
     pprint.pprint(stats_by_split_and_task)
@@ -193,4 +210,3 @@ if __name__ == "__main__":
     print()
     print("averaged across tasks:")
     pprint.pprint(divided_averaged_across_tasks)
-
