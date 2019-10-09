@@ -1,3 +1,4 @@
+import tqdm
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -79,17 +80,17 @@ class SemiMarkovModule(nn.Module):
         logits = self.init_logits
         if valid_classes is not None:
             logits = logits[valid_classes]
-        return F.log_softmax(logits)
+        return F.log_softmax(logits, dim=0)
 
     def transition_log_probs(self, valid_classes):
         transition_logits = self.transition_logits
         if valid_classes is not None:
-            transition_logits = transition_logits[valid_classes][:,valid_classes]
+            transition_logits = transition_logits[valid_classes][:, valid_classes]
             n_classes = len(valid_classes)
         else:
             n_classes = self.n_classes
         masked = transition_logits.masked_fill(
-            torch.eye(n_classes, device=self.transition_logits.device).byte(), BIG_NEG)
+            torch.eye(n_classes, device=self.transition_logits.device).bool(), BIG_NEG)
         # transition_logits are indexed: to_state, from_state
         # so each row should be normalized (in log-space)
         return F.log_softmax(masked, dim=0)
@@ -169,7 +170,10 @@ class SemiMarkovModule(nn.Module):
         # TODO: implement fixed lengths, and add eos at those positions
         batch, N_1, C_1 = emission_scores.shape
         K, _C = length_scores.shape
-        assert N_1 >= K
+        if K > N_1:
+            K = N_1
+            length_scores = length_scores[:K]
+        # assert N_1 >= K
         assert C_1 == _C
         # need to add EOS token
         if add_eos:
@@ -195,7 +199,7 @@ class SemiMarkovModule(nn.Module):
 
             emission_augmented = torch.full((b, N, C), BIG_NEG, device=emission_scores.device)
             for i, length in enumerate(lengths):
-                emission_augmented[i, :length, :C_1] = emission_scores[i,:length]
+                emission_augmented[i, :length, :C_1] = emission_scores[i, :length]
                 emission_augmented[:, length, C_1] = 0
             # emission_augmented[:, :N_1, :C_1] = emission_scores
             # emission_augmented[:, lengths, C_1] = 0
@@ -259,7 +263,8 @@ class SemiMarkovModule(nn.Module):
 
     def log_likelihood(self, features, lengths, valid_classes_per_instance, spans=None, add_eos=True):
         if valid_classes_per_instance is not None:
-            assert all_equal(set(vc.detach().cpu().numpy()) for vc in valid_classes_per_instance), "must have same valid_classes for all instances in the batch"
+            assert all_equal(set(vc.detach().cpu().numpy()) for vc in
+                             valid_classes_per_instance), "must have same valid_classes for all instances in the batch"
             valid_classes = valid_classes_per_instance[0]
             C = len(valid_classes)
         else:
@@ -268,7 +273,8 @@ class SemiMarkovModule(nn.Module):
 
         scores = self.score_features(features, lengths, valid_classes, add_eos=add_eos)
 
-        K = self.max_k
+        K = scores.size(2)
+        assert K <= self.max_k
 
         if add_eos:
             eos_lengths = lengths + 1
@@ -289,7 +295,7 @@ class SemiMarkovModule(nn.Module):
                 assert len(mapping) == len(valid_classes), "valid_classes must be unique"
                 assert -1 not in mapping
                 mapping[-1] = -1
-                mapping[self.n_classes] = C # map EOS
+                mapping[self.n_classes] = C  # map EOS
                 eos_spans_mapped.apply_(lambda x: mapping[x])
             # features = features[:,:this_N,:]
             # spans = spans[:,:this_N]
@@ -302,7 +308,8 @@ class SemiMarkovModule(nn.Module):
 
     def viterbi(self, features, lengths, valid_classes_per_instance, add_eos=True):
         if valid_classes_per_instance is not None:
-            assert all_equal(set(vc.detach().cpu().numpy()) for vc in valid_classes_per_instance), "must have same valid_classes for all instances in the batch"
+            assert all_equal(set(vc.detach().cpu().numpy()) for vc in
+                             valid_classes_per_instance), "must have same valid_classes for all instances in the batch"
             valid_classes = valid_classes_per_instance[0]
             C = len(valid_classes)
         else:
@@ -325,7 +332,7 @@ class SemiMarkovModule(nn.Module):
             assert len(mapping.values()) == len(mapping), "valid_classes must be unique"
             assert -1 not in mapping.values()
             mapping[-1] = -1
-            mapping[C] = self.n_classes # map EOS
+            mapping[C] = self.n_classes  # map EOS
             # unmap
             pred_spans_unmap.apply_(lambda x: mapping[x])
         return pred_spans_unmap
@@ -366,7 +373,7 @@ class SemiMarkovModel(Model):
 
         for epoch in range(self.args.epochs):
             losses = []
-            for batch in loader:
+            for batch in tqdm.tqdm(loader):
                 for sample in batch:
                     # if self.args.cuda:
                     #     features = features.cuda()
@@ -378,12 +385,13 @@ class SemiMarkovModel(Model):
                     labels = sample['gt_single']
                     task_indices = sample['task_indices']
 
-                    assert len(
-                        task_indices) == self.n_classes, "remove_background and multi-task fit() not implemented"
+                    # assert len( task_indices) == self.n_classes, "remove_background and multi-task fit() not implemented"
 
+                    # add a batch dimension
                     lengths = torch.LongTensor([features.size(0)]).unsqueeze(0)
                     features = features.unsqueeze(0)
                     labels = labels.unsqueeze(0)
+                    task_indices = task_indices.unsqueeze(0)
 
                     if self.args.cuda:
                         features = features.cuda()
@@ -395,7 +403,11 @@ class SemiMarkovModel(Model):
                     else:
                         spans = None
 
-                    this_loss = -self.model.log_likelihood(features, lengths, valid_classes=task_indices, spans=spans, add_eos=True)
+                    this_loss = -self.model.log_likelihood(features,
+                                                           lengths,
+                                                           valid_classes_per_instance=task_indices,
+                                                           spans=spans,
+                                                           add_eos=True)
                     this_loss.backward()
 
                     losses.append(this_loss.item())
@@ -412,8 +424,11 @@ class SemiMarkovModel(Model):
             for sample in batch:
                 features = sample['features']
                 task_indices = sample['task_indices']
+
+                # add a batch dimension
                 features = features.unsqueeze(0)
                 lengths = torch.LongTensor([features.size(0)]).unsqueeze(0)
+                task_indices = task_indices.unsqueeze(0)
 
                 if self.args.cuda:
                     features = features.cuda()

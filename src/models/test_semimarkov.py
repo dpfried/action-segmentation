@@ -92,13 +92,13 @@ def partition_rows(arr, N):
 
 def test_learn_synthetic():
     C = 6
-    MAX_K = 5
+    MAX_K = 40
     K = 5
-    N = 40
+    N = 20
     N_train = 150
     N_test = 50
 
-    supervised = False
+    supervised = True
 
     num_classes_per_instance = 3
 
@@ -149,10 +149,10 @@ def test_learn_synthetic():
             model.zero_grad()
         train_acc, train_remap_acc, _ = predict_synthetic(model, train_loader)
         test_acc, test_remap_acc, _ = predict_synthetic(model, test_loader)
-        print(train_acc)
-        print(train_remap_acc)
-        print(test_acc)
-        print(test_remap_acc)
+        # print(train_acc)
+        # print(train_remap_acc)
+        # print(test_acc)
+        # print(test_remap_acc)
         print("epoch {} avg loss: {:.4f}\ttrain acc: {:.2f}\ttest acc: {:.2f}".format(
             epoch,
             np.mean(losses),
@@ -253,7 +253,7 @@ def test_log_hsmm():
     b = 2
     C = 3
     N = 10
-    K = 5
+    K = 20 # K > N
     step_length = 2
 
     add_eos = True
