@@ -65,7 +65,8 @@ class FramewiseDiscriminative(Model):
 
         for epoch in range(self.args.epochs):
             losses = []
-            for batch in tqdm.tqdm(loader, ncols=80):
+            # for batch in tqdm.tqdm(loader, ncols=80):
+            for batch in loader:
                 for sample in batch:
                     task = sample['task_name']
                     video = sample['video_name']
@@ -146,7 +147,8 @@ class FramewiseGaussianMixture(Model):
             model = GaussianMixture(self.n_classes, covariance_type=self.args.gm_covariance)
         X_l = []
         r_l = []
-        for i in tqdm.tqdm(list(range(len(train_data))), ncols=80):
+        # for i in tqdm.tqdm(list(range(len(train_data))), ncols=80):
+        for i in range(len(train_data)):
             sample = train_data.__getitem__(i, wrap_torch=False)
             X = sample['features']
             X_l.append(X)
@@ -164,7 +166,8 @@ class FramewiseGaussianMixture(Model):
     def predict(self, test_data):
         assert self.model is not None
         predictions = {}
-        for i in tqdm.tqdm(list(range(len(test_data))), ncols=80):
+        # for i in tqdm.tqdm(list(range(len(test_data))), ncols=80):
+        for i in range(len(test_data)):
             sample = test_data.__getitem__(i, wrap_torch=False)
             X = sample['features']
             mask_indices = list(set(range(self.n_classes)) - set(sample['task_indices']))

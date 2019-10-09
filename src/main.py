@@ -38,7 +38,7 @@ def add_classifier_args(parser):
         cls.add_args(parser)
 
 
-def test(model: Model, test_data: Datasplit, test_data_name: str, verbose=True):
+def test(args, model: Model, test_data: Datasplit, test_data_name: str, verbose=True):
     if args.training == 'supervised':
         optimal_assignment = False
     else:
@@ -63,7 +63,7 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
         use_labels = False
 
     def evaluate_on_data(data, name):
-        stats_by_name = test(model, data, name, verbose=verbose)
+        stats_by_name = test(args, model, data, name, verbose=verbose)
 
         all_mof = np.array([stats['mof'] for stats in stats_by_name.values()])
         sum_mof = all_mof.sum(axis=0)
@@ -170,7 +170,7 @@ if __name__ == "__main__":
         print(split_name)
         model = train(args, train_data, test_data, split_name)
 
-        stats_by_task = test(model, test_data, split_name)
+        stats_by_task = test(args, model, test_data, split_name)
         for task, stats in stats_by_task.items():
             stats_by_split_and_task["{}_{}".format(split_name, task)] = stats
         print()

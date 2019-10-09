@@ -31,10 +31,11 @@ def sliding_sum(inputs, k):
 
 
 class SemiMarkovModule(nn.Module):
-    def __init__(self, n_classes, n_dims, max_k=None):
+    def __init__(self, n_classes, n_dims, allow_self_transitions=False, max_k=None):
         super(SemiMarkovModule, self).__init__()
         self.n_classes = n_classes
         self.n_dims = n_dims
+        self.allow_self_transitions = allow_self_transitions
         poisson_log_rates = torch.zeros(n_classes).float()
         self.poisson_log_rates = nn.Parameter(poisson_log_rates, requires_grad=True)
 
@@ -89,8 +90,11 @@ class SemiMarkovModule(nn.Module):
             n_classes = len(valid_classes)
         else:
             n_classes = self.n_classes
-        masked = transition_logits.masked_fill(
-            torch.eye(n_classes, device=self.transition_logits.device).bool(), BIG_NEG)
+        if self.allow_self_transitions:
+            masked = transition_logits
+        else:
+            masked = transition_logits.masked_fill(
+                torch.eye(n_classes, device=self.transition_logits.device).bool(), BIG_NEG)
         # transition_logits are indexed: to_state, from_state
         # so each row should be normalized (in log-space)
         return F.log_softmax(masked, dim=0)
@@ -121,20 +125,26 @@ class SemiMarkovModule(nn.Module):
         else:
             class_indices = valid_classes
             n_classes = len(valid_classes)
-        time_steps = torch.arange(max_length).unsqueeze(-1).expand(max_length, n_classes).float()
+        time_steps = torch.arange(max_length, device=self.poisson_log_rates.device).unsqueeze(-1).expand(max_length, n_classes).float()
         poissons = Poisson(torch.exp(self.poisson_log_rates[class_indices]))
         return poissons.log_prob(time_steps)
 
     @staticmethod
-    def labels_to_spans(position_labels):
+    def labels_to_spans(position_labels, max_k):
         # position_labels: b x N, LongTensor
         assert not (position_labels == -1).any(), "position_labels already appear span encoded (have -1)"
         b, N = position_labels.size()
         last = position_labels[:, 0]
         values = [last.unsqueeze(1)]
+        lengths = torch.ones_like(last)
         for n in range(1, N):
             this = position_labels[:, n]
-            encoded = torch.where(last == this, torch.LongTensor([-1]), this)
+            same_symbol = (last == this)
+            if max_k is not None:
+                same_symbol = same_symbol & (lengths < max_k - 1)
+            encoded = torch.where(same_symbol, torch.LongTensor([-1]), this)
+            lengths = torch.where(same_symbol, lengths, torch.LongTensor([0]))
+            lengths += 1
             values.append(encoded.unsqueeze(1))
             last = this
         return torch.cat(values, dim=1)
@@ -356,7 +366,8 @@ class SemiMarkovModel(Model):
         assert self.args.sm_max_span_length is not None
         self.model = SemiMarkovModule(self.n_classes,
                                       self.feature_dim,
-                                      max_k=self.args.sm_max_span_length)
+                                      max_k=self.args.sm_max_span_length,
+                                      allow_self_transitions=True)
         if args.cuda:
             self.model.cuda()
 
@@ -366,6 +377,8 @@ class SemiMarkovModel(Model):
         loader = make_data_loader(self.args, train_data, shuffle=True, batch_size=1)
 
         all_features = [sample['features'] for batch in loader for sample in batch]
+        if self.args.cuda:
+            all_features = [feats.cuda() for feats in all_features]
         self.model.initialize_gaussian_from_feature_list(all_features)
 
         C = self.n_classes
@@ -399,7 +412,7 @@ class SemiMarkovModel(Model):
                         labels = labels.cuda()
 
                     if use_labels:
-                        spans = SemiMarkovModule.labels_to_spans(labels)
+                        spans = SemiMarkovModule.labels_to_spans(labels, max_k=K)
                     else:
                         spans = None
 
@@ -426,8 +439,8 @@ class SemiMarkovModel(Model):
                 task_indices = sample['task_indices']
 
                 # add a batch dimension
-                features = features.unsqueeze(0)
                 lengths = torch.LongTensor([features.size(0)]).unsqueeze(0)
+                features = features.unsqueeze(0)
                 task_indices = task_indices.unsqueeze(0)
 
                 if self.args.cuda:

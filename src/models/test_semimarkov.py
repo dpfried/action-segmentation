@@ -21,18 +21,19 @@ BIG_NEG = -1e9
 
 
 class ToyDataset(Dataset):
-    def __init__(self, labels, features, lengths, valid_classes):
+    def __init__(self, labels, features, lengths, valid_classes, max_k):
         self.labels = labels
         self.features = features
         self.lengths = lengths
         self.valid_classes = valid_classes
+        self.max_k = max_k
 
     def __len__(self):
         return self.labels.size(0)
 
     def __getitem__(self, index):
         labels = self.labels[index]
-        spans = SemiMarkovModule.labels_to_spans(labels.unsqueeze(0)).squeeze(0)
+        spans = SemiMarkovModule.labels_to_spans(labels.unsqueeze(0), max_k=self.max_k).squeeze(0)
         return {
             'labels': self.labels[index],
             'features': self.features[index],
@@ -98,7 +99,9 @@ def test_learn_synthetic():
     N_train = 150
     N_test = 50
 
-    supervised = True
+    supervised = False
+
+    allow_self_transitions = True
 
     num_classes_per_instance = 3
 
@@ -107,13 +110,17 @@ def test_learn_synthetic():
     batch_size = 1
 
     train_data = ToyDataset(
-        *synthetic_data(num_data_points=N_train, C=C, N=N, K=K, num_classes_per_instance=num_classes_per_instance))
+        *synthetic_data(num_data_points=N_train, C=C, N=N, K=K, num_classes_per_instance=num_classes_per_instance),
+        max_k=MAX_K
+    )
     train_loader = DataLoader(train_data, batch_size=batch_size)
     test_data = ToyDataset(
-        *synthetic_data(num_data_points=N_test, C=C, N=N, K=K, num_classes_per_instance=num_classes_per_instance))
+        *synthetic_data(num_data_points=N_test, C=C, N=N, K=K, num_classes_per_instance=num_classes_per_instance),
+        max_k=MAX_K
+    )
     test_loader = DataLoader(test_data, batch_size=batch_size)
 
-    model = SemiMarkovModule(C, C, max_k=MAX_K)
+    model = SemiMarkovModule(C, C, max_k=MAX_K, allow_self_transitions=allow_self_transitions)
     model.initialize_gaussian(train_data.features, train_data.lengths)
 
     model.train()
@@ -201,8 +208,8 @@ def predict_synthetic(model, dataloader):
         gold_spans = gold_spans[:, :this_N]
 
         pred_spans = model.viterbi(features, lengths, valid_classes_per_instance=valid_classes, add_eos=True)
-        gold_labels = SemiMarkovModule.spans_to_labels(gold_spans)
-        pred_labels = SemiMarkovModule.spans_to_labels(pred_spans)
+        gold_labels = model.spans_to_labels(gold_spans)
+        pred_labels = model.spans_to_labels(pred_spans)
 
         gold_labels_trim = model.trim(gold_labels, lengths, check_eos=False)
         pred_labels_trim = model.trim(pred_labels, lengths, check_eos=True)
@@ -236,11 +243,11 @@ def predict_synthetic(model, dataloader):
 def test_labels_and_spans():
     position_labels = torch.LongTensor([[0, 1, 1, 2, 2, 2], [0, 1, 2, 3, 3, 4]])
     spans = torch.LongTensor([[0, 1, -1, 2, -1, -1], [0, 1, 2, 3, -1, 4]])
-    assert (SemiMarkovModule.labels_to_spans(position_labels) == spans).all()
+    assert (SemiMarkovModule.labels_to_spans(position_labels, max_k=10) == spans).all()
     assert (SemiMarkovModule.spans_to_labels(spans) == position_labels).all()
 
     rand_labels = torch.randint(low=0, high=3, size=(5, 20))
-    assert (SemiMarkovModule.spans_to_labels(SemiMarkovModule.labels_to_spans(rand_labels)) == rand_labels).all()
+    assert (SemiMarkovModule.spans_to_labels(SemiMarkovModule.labels_to_spans(rand_labels, max_k=5)) == rand_labels).all()
 
 
 def test_log_hsmm():
