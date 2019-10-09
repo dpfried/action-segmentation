@@ -1,5 +1,7 @@
 import random
 
+from scipy.optimize import linear_sum_assignment
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -19,10 +21,11 @@ BIG_NEG = -1e9
 
 
 class ToyDataset(Dataset):
-    def __init__(self, labels, features, lengths):
+    def __init__(self, labels, features, lengths, valid_classes):
         self.labels = labels
         self.features = features
         self.lengths = lengths
+        self.valid_classes = valid_classes
 
     def __len__(self):
         return self.labels.size(0)
@@ -34,12 +37,13 @@ class ToyDataset(Dataset):
             'labels': self.labels[index],
             'features': self.features[index],
             'lengths': self.lengths[index],
+            'valid_classes': self.valid_classes[index],
             'spans': spans,
         }
 
 
-def synthetic_data(num_data_points=200, C=3, N=100, K=5):
-    def make_synthetic_features(class_labels, shift_constant=10.0):
+def synthetic_data(num_data_points=200, C=3, N=100, K=5, num_classes_per_instance=None):
+    def make_synthetic_features(class_labels, shift_constant=2.0):
         _batch_size, _N = class_labels.size()
         f = torch.randn((_batch_size, _N, C))
         shift = torch.zeros_like(f)
@@ -48,6 +52,7 @@ def synthetic_data(num_data_points=200, C=3, N=100, K=5):
 
     labels_l = []
     lengths = []
+    valid_classes = []
     for i in range(num_data_points):
         if i == 0:
             length = N
@@ -56,17 +61,25 @@ def synthetic_data(num_data_points=200, C=3, N=100, K=5):
         lengths.append(length)
         lab = []
         current_step = 0
+        if num_classes_per_instance is not None:
+            assert num_classes_per_instance <= C
+            this_valid_classes = np.random.choice(list(range(C)), size=num_classes_per_instance, replace=False)
+        else:
+            this_valid_classes = list(range(C))
+        valid_classes.append(this_valid_classes)
         while len(lab) < N:
-            step_length = random.randint(1, K-1)
-            lab.extend([current_step % C] * step_length)
+            step_length = random.randint(1, K - 1)
+            this_label = this_valid_classes[current_step % len(this_valid_classes)]
+            lab.extend([this_label] * step_length)
             current_step += 1
         lab = lab[:N]
         labels_l.append(lab)
     labels = torch.LongTensor(labels_l)
     features = make_synthetic_features(labels)
     lengths = torch.LongTensor(lengths)
+    valid_classes = [torch.LongTensor(tvc) for tvc in valid_classes]
 
-    return labels, features, lengths
+    return labels, features, lengths, valid_classes
 
 
 def partition_rows(arr, N):
@@ -78,25 +91,30 @@ def partition_rows(arr, N):
 
 
 def test_learn_synthetic():
-    C = 3
+    C = 6
     MAX_K = 5
     K = 5
     N = 40
     N_train = 150
     N_test = 50
 
+    supervised = False
+
+    num_classes_per_instance = 3
+
     epochs = 20
 
-    batch_size = 20
+    batch_size = 1
 
-    train_data = ToyDataset(*synthetic_data(num_data_points=N_train, C=C, N=N, K=K))
+    train_data = ToyDataset(
+        *synthetic_data(num_data_points=N_train, C=C, N=N, K=K, num_classes_per_instance=num_classes_per_instance))
     train_loader = DataLoader(train_data, batch_size=batch_size)
-    test_data = ToyDataset(*synthetic_data(num_data_points=N_test, C=C, N=N, K=K))
+    test_data = ToyDataset(
+        *synthetic_data(num_data_points=N_test, C=C, N=N, K=K, num_classes_per_instance=num_classes_per_instance))
     test_loader = DataLoader(test_data, batch_size=batch_size)
 
     model = SemiMarkovModule(C, C, max_k=MAX_K)
     model.initialize_gaussian(train_data.features, train_data.lengths)
-    print(model.gaussian_means)
 
     model.train()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-1)
@@ -111,45 +129,78 @@ def test_learn_synthetic():
             features = batch['features']
             lengths = batch['lengths']
             spans = batch['spans']
+            valid_classes = batch['valid_classes']
             this_N = lengths.max().item()
-            features = features[:,:this_N,:]
-            spans = spans[:,:this_N]
-            scores = model.score_features(features, lengths, valid_classes=None, add_eos=True)
-            dist = SemiMarkovCRF(scores, lengths=lengths+1)
-            gold_parts = SemiMarkovCRF.struct.to_parts(model.add_eos(spans, lengths), (C+1, MAX_K), lengths=lengths+1).type_as(scores)
-            this_loss = -dist.log_prob(gold_parts).mean()
+            features = features[:, :this_N, :]
+            spans = spans[:, :this_N]
+
+            if supervised:
+                spans_sup = spans
+            else:
+                spans_sup = None
+
+            this_loss = -model.log_likelihood(features, lengths, valid_classes_per_instance=valid_classes,
+                                              spans=spans_sup)
             this_loss.backward()
 
             losses.append(this_loss.item())
 
             optimizer.step()
             model.zero_grad()
-        train_acc, _ = predict_synthetic(model, train_loader)
-        test_acc, _ = predict_synthetic(model, test_loader)
-        print("epoch {} avg loss: {:.4f}\ttrain acc: {:.2f}\ttest acc: {:.2f}".format(epoch, np.mean(losses), train_acc, test_acc))
+        train_acc, train_remap_acc, _ = predict_synthetic(model, train_loader)
+        test_acc, test_remap_acc, _ = predict_synthetic(model, test_loader)
+        print(train_acc)
+        print(train_remap_acc)
+        print(test_acc)
+        print(test_remap_acc)
+        print("epoch {} avg loss: {:.4f}\ttrain acc: {:.2f}\ttest acc: {:.2f}".format(
+            epoch,
+            np.mean(losses),
+            train_acc if supervised else train_remap_acc,
+            test_acc if supervised else test_remap_acc,
+        ))
 
     return model, train_loader, test_loader
+
+
+def optimal_map(predicted_labels, gold_labels, possible_labels):
+    assert all(lab in possible_labels for lab in predicted_labels)
+    assert all(lab in possible_labels for lab in gold_labels)
+    voting_table = np.zeros((len(possible_labels), len(possible_labels)))
+    labs_numpy = possible_labels.detach().cpu().numpy()
+    for idx_gt, label_gt in enumerate(labs_numpy):
+        gold_mask = gold_labels == label_gt
+        for idx_pr, label_pr in enumerate(labs_numpy):
+            voting_table[idx_gt, idx_pr] = (predicted_labels[gold_mask] == label_pr).sum()
+
+    best_gt, best_pr = linear_sum_assignment(-voting_table)
+    mapping = {
+        labs_numpy[pr]: labs_numpy[gt]
+        for pr, gt in zip(best_pr, best_gt)
+    }
+    remapped = predicted_labels.clone()
+    remapped.apply_(lambda lab: mapping[lab])
+    return remapped, mapping
 
 
 def predict_synthetic(model, dataloader):
     items = []
     token_match = 0
     token_total = 0
+    token_remap_match = 0
     for batch in dataloader:
         features = batch['features']
         lengths = batch['lengths']
         gold_spans = batch['spans']
+        valid_classes = batch['valid_classes']
 
         batch_size = features.size(0)
 
         this_N = lengths.max().item()
-        features = features[:,:this_N,:]
-        gold_spans = gold_spans[:,:this_N]
+        features = features[:, :this_N, :]
+        gold_spans = gold_spans[:, :this_N]
 
-        scores = model.score_features(features, lengths, valid_classes=None, add_eos=True)
-        dist = SemiMarkovCRF(scores, lengths=lengths+1)
-        pred_spans, extra = dist.struct.from_parts(dist.argmax)
-
+        pred_spans = model.viterbi(features, lengths, valid_classes_per_instance=valid_classes, add_eos=True)
         gold_labels = SemiMarkovModule.spans_to_labels(gold_spans)
         pred_labels = SemiMarkovModule.spans_to_labels(pred_spans)
 
@@ -160,6 +211,8 @@ def predict_synthetic(model, dataloader):
         assert len(pred_labels_trim) == batch_size
 
         for i in range(batch_size):
+            this_valid_classes = valid_classes[i]
+            pred_remapped, mapping = optimal_map(pred_labels_trim[i], gold_labels_trim[i], this_valid_classes)
             item = {
                 'length': lengths[i].item(),
                 'gold_spans': gold_spans[i],
@@ -168,12 +221,16 @@ def predict_synthetic(model, dataloader):
                 'pred_labels': pred_labels[i],
                 'gold_labels_trim': gold_labels_trim[i],
                 'pred_labels_trim': pred_labels_trim[i],
+                'pred_labels_remap_trim': pred_remapped,
+                'mapping': mapping
             }
             items.append(item)
-            token_match += (gold_labels_trim[i] == pred_labels_trim[i]).sum()
+            token_match += (gold_labels_trim[i] == pred_labels_trim[i]).sum().item()
+            token_remap_match += (gold_labels_trim[i] == pred_remapped).sum().item()
             token_total += pred_labels_trim[i].size(0)
     accuracy = 100.0 * token_match / token_total
-    return accuracy, items
+    remapped_accuracy = 100.0 * token_remap_match / token_total
+    return accuracy, remapped_accuracy, items
 
 
 def test_labels_and_spans():
@@ -182,7 +239,7 @@ def test_labels_and_spans():
     assert (SemiMarkovModule.labels_to_spans(position_labels) == spans).all()
     assert (SemiMarkovModule.spans_to_labels(spans) == position_labels).all()
 
-    rand_labels = torch.randint(low=0, high=3, size=(5,20))
+    rand_labels = torch.randint(low=0, high=3, size=(5, 20))
     assert (SemiMarkovModule.spans_to_labels(SemiMarkovModule.labels_to_spans(rand_labels)) == rand_labels).all()
 
 
@@ -224,7 +281,8 @@ def test_log_hsmm():
     length_scores = torch.full((K, C), BIG_NEG, device=device)
     length_scores[step_length, :] = 0
 
-    scores = SemiMarkovModule.log_hsmm(trans_scores, emission_scores, init_scores, length_scores, lengths_unpadded, add_eos=add_eos)
+    scores = SemiMarkovModule.log_hsmm(trans_scores, emission_scores, init_scores, length_scores, lengths_unpadded,
+                                       add_eos=add_eos)
     marginals = sm_max.marginals(scores, lengths=lengths)
 
     sequence, extra = sm_max.from_parts(marginals)
@@ -246,7 +304,9 @@ test_log_hsmm()
 print("test_log_hsmm passed")
 
 model, trainloader, testloader = test_learn_synthetic()
-train_acc, train_preds = predict_synthetic(model, trainloader)
-test_acc, test_preds = predict_synthetic(model, testloader)
+train_acc, train_remap_accuracy, train_preds = predict_synthetic(model, trainloader)
+test_acc, test_remap_accuracy, test_preds = predict_synthetic(model, testloader)
 print("train acc: {:.2f}".format(train_acc))
+print("train remap acc: {:.2f}".format(train_remap_accuracy))
 print("test acc: {:.2f}".format(test_acc))
+print("test remap acc: {:.2f}".format(test_remap_accuracy))

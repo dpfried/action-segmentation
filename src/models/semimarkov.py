@@ -257,18 +257,22 @@ class SemiMarkovModule(nn.Module):
             add_eos=add_eos,
         )
 
-    def log_likelihood(self, features, lengths, valid_classes, spans=None, add_eos=True):
-        scores = self.model.score_features(features, lengths, valid_classes, add_eos=add_eos)
-        if valid_classes is not None:
+    def log_likelihood(self, features, lengths, valid_classes_per_instance, spans=None, add_eos=True):
+        if valid_classes_per_instance is not None:
+            assert all_equal(set(vc.detach().cpu().numpy()) for vc in valid_classes_per_instance), "must have same valid_classes for all instances in the batch"
+            valid_classes = valid_classes_per_instance[0]
             C = len(valid_classes)
         else:
+            valid_classes = None
             C = self.n_classes
+
+        scores = self.score_features(features, lengths, valid_classes, add_eos=add_eos)
 
         K = self.max_k
 
         if add_eos:
             eos_lengths = lengths + 1
-            eos_spans = self.model.add_eos(spans, lengths) if spans is not None else spans
+            eos_spans = self.add_eos(spans, lengths) if spans is not None else spans
             eos_C = C + 1
         else:
             eos_lengths = lengths
@@ -277,22 +281,34 @@ class SemiMarkovModule(nn.Module):
 
         dist = SemiMarkovCRF(scores, lengths=eos_lengths)
 
-        if spans is not None:
+        if eos_spans is not None:
+            eos_spans_mapped = eos_spans.detach().cpu()
+            if valid_classes is not None:
+                # unmap
+                mapping = {cls.item(): index for index, cls in enumerate(valid_classes)}
+                assert len(mapping) == len(valid_classes), "valid_classes must be unique"
+                assert -1 not in mapping
+                mapping[-1] = -1
+                mapping[self.n_classes] = C # map EOS
+                eos_spans_mapped.apply_(lambda x: mapping[x])
             # features = features[:,:this_N,:]
             # spans = spans[:,:this_N]
-            parts = SemiMarkovCRF.struct.to_parts(eos_spans, (eos_C, K),
+            parts = SemiMarkovCRF.struct.to_parts(eos_spans_mapped, (eos_C, K),
                                                   lengths=eos_lengths).type_as(scores)
             log_likelihood = dist.log_prob(parts).mean()
         else:
             log_likelihood = dist.partition.mean()
         return log_likelihood
 
-    def viterbi(self, features, lengths, valid_classes, add_eos=True):
-        scores = self.model.score_features(features, lengths, valid_classes, add_eos=add_eos)
-        if valid_classes is not None:
+    def viterbi(self, features, lengths, valid_classes_per_instance, add_eos=True):
+        if valid_classes_per_instance is not None:
+            assert all_equal(set(vc.detach().cpu().numpy()) for vc in valid_classes_per_instance), "must have same valid_classes for all instances in the batch"
+            valid_classes = valid_classes_per_instance[0]
             C = len(valid_classes)
         else:
+            valid_classes = None
             C = self.n_classes
+        scores = self.score_features(features, lengths, valid_classes, add_eos=add_eos)
         if add_eos:
             eos_lengths = lengths + 1
         else:
@@ -305,8 +321,11 @@ class SemiMarkovModule(nn.Module):
 
         pred_spans_unmap = pred_spans.detach().cpu()
         if valid_classes is not None:
-            mapping = {cls: index for index, cls in enumerate(valid_classes)}
-            assert len(mapping) == len(valid_classes), "valid_classes must be unique"
+            mapping = {index: cls.item() for index, cls in enumerate(valid_classes)}
+            assert len(mapping.values()) == len(mapping), "valid_classes must be unique"
+            assert -1 not in mapping.values()
+            mapping[-1] = -1
+            mapping[C] = self.n_classes # map EOS
             # unmap
             pred_spans_unmap.apply_(lambda x: mapping[x])
         return pred_spans_unmap
