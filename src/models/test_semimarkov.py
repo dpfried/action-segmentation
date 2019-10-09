@@ -39,7 +39,7 @@ class ToyDataset(Dataset):
 
 
 def synthetic_data(num_data_points=200, C=3, N=100, K=5):
-    def make_synthetic_features(class_labels, shift_constant=2.0):
+    def make_synthetic_features(class_labels, shift_constant=10.0):
         _batch_size, _N = class_labels.size()
         f = torch.randn((_batch_size, _N, C))
         shift = torch.zeros_like(f)
@@ -79,6 +79,7 @@ def partition_rows(arr, N):
 
 def test_learn_synthetic():
     C = 3
+    MAX_K = 5
     K = 5
     N = 40
     N_train = 150
@@ -86,17 +87,19 @@ def test_learn_synthetic():
 
     epochs = 20
 
-    train_data = ToyDataset(*synthetic_data(num_data_points=N_train, C=C, N=N, K=K))
-    train_loader = DataLoader(train_data, batch_size=20)
-    test_data = ToyDataset(*synthetic_data(num_data_points=N_test, C=C, N=N, K=K))
-    test_loader = DataLoader(train_data, batch_size=20)
+    batch_size = 20
 
-    model = SemiMarkovModule(C, C, max_k=K)
+    train_data = ToyDataset(*synthetic_data(num_data_points=N_train, C=C, N=N, K=K))
+    train_loader = DataLoader(train_data, batch_size=batch_size)
+    test_data = ToyDataset(*synthetic_data(num_data_points=N_test, C=C, N=N, K=K))
+    test_loader = DataLoader(test_data, batch_size=batch_size)
+
+    model = SemiMarkovModule(C, C, max_k=MAX_K)
     model.initialize_gaussian(train_data.features, train_data.lengths)
     print(model.gaussian_means)
 
     model.train()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-1)
 
     for epoch in range(epochs):
         losses = []
@@ -111,9 +114,9 @@ def test_learn_synthetic():
             this_N = lengths.max().item()
             features = features[:,:this_N,:]
             spans = spans[:,:this_N]
-            scores = model.score_features(features, add_eos=True)
+            scores = model.score_features(features, lengths, valid_classes=None, add_eos=True)
             dist = SemiMarkovCRF(scores, lengths=lengths+1)
-            gold_parts = SemiMarkovCRF.struct.to_parts(model.add_eos(spans, lengths), (C+1, K), lengths=lengths+1).type_as(scores)
+            gold_parts = SemiMarkovCRF.struct.to_parts(model.add_eos(spans, lengths), (C+1, MAX_K), lengths=lengths+1).type_as(scores)
             this_loss = -dist.log_prob(gold_parts).mean()
             this_loss.backward()
 
@@ -143,7 +146,7 @@ def predict_synthetic(model, dataloader):
         features = features[:,:this_N,:]
         gold_spans = gold_spans[:,:this_N]
 
-        scores = model.score_features(features, add_eos=True)
+        scores = model.score_features(features, lengths, valid_classes=None, add_eos=True)
         dist = SemiMarkovCRF(scores, lengths=lengths+1)
         pred_spans, extra = dist.struct.from_parts(dist.argmax)
 
@@ -221,7 +224,7 @@ def test_log_hsmm():
     length_scores = torch.full((K, C), BIG_NEG, device=device)
     length_scores[step_length, :] = 0
 
-    scores = SemiMarkovModule.log_hsmm(trans_scores, emission_scores, init_scores, length_scores, add_eos=add_eos)
+    scores = SemiMarkovModule.log_hsmm(trans_scores, emission_scores, init_scores, length_scores, lengths_unpadded, add_eos=add_eos)
     marginals = sm_max.marginals(scores, lengths=lengths)
 
     sequence, extra = sm_max.from_parts(marginals)

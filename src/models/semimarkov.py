@@ -8,6 +8,8 @@ from torch_struct import SemiMarkovCRF
 from data.corpus import Datasplit
 from models.model import Model, make_optimizer, make_data_loader
 
+from utils.utils import all_equal
+
 BIG_NEG = -1e9
 
 
@@ -73,22 +75,36 @@ class SemiMarkovModule(nn.Module):
             feats.append(data[i, :lengths[i]])
         self.initialize_gaussian_from_feature_list(feats)
 
-    def initial_log_probs(self):
-        return F.log_softmax(self.init_logits)
+    def initial_log_probs(self, valid_classes):
+        logits = self.init_logits
+        if valid_classes is not None:
+            logits = logits[valid_classes]
+        return F.log_softmax(logits)
 
-    def transition_log_probs(self):
-        masked = self.transition_logits.masked_fill(
-            torch.eye(self.n_classes, device=self.transition_logits.device).byte(), BIG_NEG)
+    def transition_log_probs(self, valid_classes):
+        transition_logits = self.transition_logits
+        if valid_classes is not None:
+            transition_logits = transition_logits[valid_classes][:,valid_classes]
+            n_classes = len(valid_classes)
+        else:
+            n_classes = self.n_classes
+        masked = transition_logits.masked_fill(
+            torch.eye(n_classes, device=self.transition_logits.device).byte(), BIG_NEG)
         # transition_logits are indexed: to_state, from_state
         # so each row should be normalized (in log-space)
         return F.log_softmax(masked, dim=0)
 
-    def emission_log_probs(self, features):
+    def emission_log_probs(self, features, valid_classes):
         b, N, d = features.size()
         feats_reshaped = features.reshape(-1, d)
+        if valid_classes is None:
+            class_indices = range(self.n_classes)
+        else:
+            class_indices = valid_classes
         dists = [
-            MultivariateNormal(loc=mean, covariance_matrix=self.gaussian_cov)
-            for mean in self.gaussian_means
+            MultivariateNormal(loc=self.gaussian_means[class_index],
+                               covariance_matrix=self.gaussian_cov)
+            for class_index in class_indices
         ]
         log_probs = [
             dist.log_prob(feats_reshaped).reshape(b, N, 1)  # b x
@@ -96,10 +112,16 @@ class SemiMarkovModule(nn.Module):
         ]
         return torch.cat(log_probs, dim=2)
 
-    def length_log_probs(self):
+    def length_log_probs(self, valid_classes):
         max_length = self.max_k
-        time_steps = torch.arange(max_length).unsqueeze(-1).expand(max_length, self.n_classes).float()
-        poissons = Poisson(torch.exp(self.poisson_log_rates))
+        if valid_classes is None:
+            class_indices = list(range(self.n_classes))
+            n_classes = self.n_classes
+        else:
+            class_indices = valid_classes
+            n_classes = len(valid_classes)
+        time_steps = torch.arange(max_length).unsqueeze(-1).expand(max_length, n_classes).float()
+        poissons = Poisson(torch.exp(self.poisson_log_rates[class_indices]))
         return poissons.log_prob(time_steps)
 
     @staticmethod
@@ -132,7 +154,7 @@ class SemiMarkovModule(nn.Module):
         return torch.cat(values, dim=1)
 
     @staticmethod
-    def log_hsmm(transition, emission_scores, init, length_scores, add_eos):
+    def log_hsmm(transition, emission_scores, init, length_scores, lengths, add_eos):
         """
         Convert HSMM to a linear chain.
         Parameters:
@@ -140,9 +162,11 @@ class SemiMarkovModule(nn.Module):
             emission_scores: b x N x C
             init: C
             length_scores: K x C
+            add_eos: bool, whether to augment with an EOS class (with index C) which can only appear in the final timestep
         Returns:
-            edges: b x (N-1) x C x C
+            edges: b x (N-1) x C x C if not add_eos, or b x (N) x (C+1) x (C+1) if add_eos
         """
+        # TODO: implement fixed lengths, and add eos at those positions
         batch, N_1, C_1 = emission_scores.shape
         K, _C = length_scores.shape
         assert N_1 >= K
@@ -170,8 +194,12 @@ class SemiMarkovModule(nn.Module):
             length_augmented[1, C_1] = 0
 
             emission_augmented = torch.full((b, N, C), BIG_NEG, device=emission_scores.device)
-            emission_augmented[:, :N_1, :C_1] = emission_scores
-            emission_augmented[:, N_1, C_1] = 0
+            for i, length in enumerate(lengths):
+                emission_augmented[i, :length, :C_1] = emission_scores[i,:length]
+                emission_augmented[:, length, C_1] = 0
+            # emission_augmented[:, :N_1, :C_1] = emission_scores
+            # emission_augmented[:, lengths, C_1] = 0
+            # emission_augmented[:, N_1, C_1] = 0
 
         else:
             transition_augmented = transition
@@ -218,14 +246,70 @@ class SemiMarkovModule(nn.Module):
             seqs.append(spans[i, :lengths[i]])
         return seqs
 
-    def score_features(self, features, add_eos):
+    def score_features(self, features, lengths, valid_classes, add_eos):
+        # assert all_equal(lengths), "varied length scoring isn't implemented"
         return self.log_hsmm(
-            self.transition_log_probs(),
-            self.emission_log_probs(features),
-            self.initial_log_probs(),
-            self.length_log_probs(),
+            self.transition_log_probs(valid_classes),
+            self.emission_log_probs(features, valid_classes),
+            self.initial_log_probs(valid_classes),
+            self.length_log_probs(valid_classes),
+            lengths,
             add_eos=add_eos,
         )
+
+    def log_likelihood(self, features, lengths, valid_classes, spans=None, add_eos=True):
+        scores = self.model.score_features(features, lengths, valid_classes, add_eos=add_eos)
+        if valid_classes is not None:
+            C = len(valid_classes)
+        else:
+            C = self.n_classes
+
+        K = self.max_k
+
+        if add_eos:
+            eos_lengths = lengths + 1
+            eos_spans = self.model.add_eos(spans, lengths) if spans is not None else spans
+            eos_C = C + 1
+        else:
+            eos_lengths = lengths
+            eos_spans = spans
+            eos_C = C
+
+        dist = SemiMarkovCRF(scores, lengths=eos_lengths)
+
+        if spans is not None:
+            # features = features[:,:this_N,:]
+            # spans = spans[:,:this_N]
+            parts = SemiMarkovCRF.struct.to_parts(eos_spans, (eos_C, K),
+                                                  lengths=eos_lengths).type_as(scores)
+            log_likelihood = dist.log_prob(parts).mean()
+        else:
+            log_likelihood = dist.partition.mean()
+        return log_likelihood
+
+    def viterbi(self, features, lengths, valid_classes, add_eos=True):
+        scores = self.model.score_features(features, lengths, valid_classes, add_eos=add_eos)
+        if valid_classes is not None:
+            C = len(valid_classes)
+        else:
+            C = self.n_classes
+        if add_eos:
+            eos_lengths = lengths + 1
+        else:
+            eos_lengths = lengths
+        dist = SemiMarkovCRF(scores, lengths=eos_lengths)
+
+        pred_spans, extra = dist.struct.from_parts(dist.argmax)
+        # convert to class labels
+        # pred_spans_trim = self.model.trim(pred_spans, lengths, check_eos=add_eos)
+
+        pred_spans_unmap = pred_spans.detach().cpu()
+        if valid_classes is not None:
+            mapping = {cls: index for index, cls in enumerate(valid_classes)}
+            assert len(mapping) == len(valid_classes), "valid_classes must be unique"
+            # unmap
+            pred_spans_unmap.apply_(lambda x: mapping[x])
+        return pred_spans_unmap
 
 
 class SemiMarkovModel(Model):
@@ -272,6 +356,7 @@ class SemiMarkovModel(Model):
                     task = sample['task_name']
                     video = sample['video_name']
                     features = sample['features']
+                    labels = sample['gt_single']
                     task_indices = sample['task_indices']
 
                     assert len(
@@ -279,28 +364,21 @@ class SemiMarkovModel(Model):
 
                     lengths = torch.LongTensor([features.size(0)]).unsqueeze(0)
                     features = features.unsqueeze(0)
+                    labels = labels.unsqueeze(0)
 
                     if self.args.cuda:
                         features = features.cuda()
                         lengths = lengths.cuda()
-
-                    scores = self.model.score_features(features, add_eos=True)
-                    dist = SemiMarkovCRF(scores, lengths=lengths + 1)
+                        labels = labels.cuda()
 
                     if use_labels:
-                        labels = sample['gt_single']
-                        labels = labels.unsqueeze(0)
                         spans = SemiMarkovModule.labels_to_spans(labels)
-
-                        # features = features[:,:this_N,:]
-                        # spans = spans[:,:this_N]
-                        gold_parts = SemiMarkovCRF.struct.to_parts(self.model.add_eos(spans, lengths), (C + 1, K),
-                                                                   lengths=lengths + 1).type_as(scores)
-                        this_loss = -dist.log_prob(gold_parts).mean()
                     else:
-                        this_loss = -dist.partition.mean()
+                        spans = None
 
+                    this_loss = -self.model.log_likelihood(features, lengths, valid_classes=task_indices, spans=spans, add_eos=True)
                     this_loss.backward()
+
                     losses.append(this_loss.item())
                 # TODO: grad clipping?
                 optimizer.step()
@@ -323,11 +401,10 @@ class SemiMarkovModel(Model):
                     task_indices = task_indices.cuda()
                 video = sample['video_name']
 
-                scores = self.model.score_features(features, add_eos=True)
-                dist = SemiMarkovCRF(scores, lengths=lengths + 1)
-                pred_spans, extra = dist.struct.from_parts(dist.argmax)
-
+                pred_spans = self.model.viterbi(features, lengths, task_indices, add_eos=True)
                 pred_labels = SemiMarkovModule.spans_to_labels(pred_spans)
                 pred_labels_trim = self.model.trim(pred_labels, lengths, check_eos=True)
-                predictions[video] = pred_labels_trim.detach().cpu().numpy()
+
+                assert len(pred_labels_trim) == 1, "batch size should be 1"
+                predictions[video] = pred_labels_trim[0].numpy()
         return predictions
