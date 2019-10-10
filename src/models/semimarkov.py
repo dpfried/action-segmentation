@@ -233,9 +233,10 @@ class SemiMarkovModule(nn.Module):
         for k in range(1, K):
             # scores[:, :, k, :, :] += sliding_sum(emission_augmented, k).view(b, N, 1, C)[:, :N - 1]
             # scores[:, N - 1 - k, k, :, :] += emission_augmented[:, N - 1].view(b, C, 1)
+            summed = sliding_sum(emission_augmented, k).view(b, N, 1, C)
             for i in range(b):
                 length = lengths[i]
-                scores[i, :length - 1, k, :, :] += sliding_sum(emission_augmented, k).view(b, N, 1, C)[i, :length - 1]
+                scores[i, :length - 1, k, :, :] += summed[i, :length - 1]
                 scores[i, length - 1 - k, k, :, :] += emission_augmented[i, length - 1].view(C, 1)
 
         # for n in range(N):
