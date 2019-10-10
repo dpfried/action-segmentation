@@ -25,6 +25,7 @@ def add_data_args(parser):
     parser.add_argument('--dataset', choices=['crosstask', 'breakfast'], default='crosstask')
     parser.add_argument('--num_workers', type=int, default=1)
     parser.add_argument('--features', choices=['raw', 'pca'], default='raw')
+    parser.add_argument('--batch_size', type=int, default=5)
     parser.add_argument('--remove_background', action='store_true')
     parser.add_argument('--pca_components_per_group', type=int, default=100)
     parser.add_argument('--crosstask_feature_groups', choices=['i3d', 'resnet', 'audio'], default=['i3d', 'resnet'])

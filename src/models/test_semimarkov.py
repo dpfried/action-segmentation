@@ -1,14 +1,10 @@
 import random
 
-from scipy.optimize import linear_sum_assignment
-
 import numpy as np
 import torch
-import torch.nn as nn
+from scipy.optimize import linear_sum_assignment
 from torch.utils.data import Dataset, DataLoader
-import tqdm
 from torch_struct import SemiMarkov, MaxSemiring
-from torch_struct import SemiMarkovCRF
 
 from models.semimarkov import SemiMarkovModule
 
@@ -99,15 +95,15 @@ def test_learn_synthetic():
     N_train = 150
     N_test = 50
 
-    supervised = False
+    supervised = True
 
     allow_self_transitions = True
 
-    num_classes_per_instance = 3
+    num_classes_per_instance = None
 
     epochs = 20
 
-    batch_size = 1
+    batch_size = 10
 
     train_data = ToyDataset(
         *synthetic_data(num_data_points=N_train, C=C, N=N, K=K, num_classes_per_instance=num_classes_per_instance),
@@ -247,7 +243,8 @@ def test_labels_and_spans():
     assert (SemiMarkovModule.spans_to_labels(spans) == position_labels).all()
 
     rand_labels = torch.randint(low=0, high=3, size=(5, 20))
-    assert (SemiMarkovModule.spans_to_labels(SemiMarkovModule.labels_to_spans(rand_labels, max_k=5)) == rand_labels).all()
+    assert (SemiMarkovModule.spans_to_labels(
+        SemiMarkovModule.labels_to_spans(rand_labels, max_k=5)) == rand_labels).all()
 
 
 def test_log_hsmm():
@@ -257,11 +254,17 @@ def test_log_hsmm():
     # K = 50
     # step_length = 20
 
-    b = 2
-    C = 3
-    N = 10
-    K = 20 # K > N
-    step_length = 2
+    # b = 10
+    # C = 3
+    # N = 10
+    # K = 20  # K > N
+    # step_length = 2
+
+    b = 10
+    C = 4
+    N = 100
+    K = 5
+    step_length = 4
 
     add_eos = True
 

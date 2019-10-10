@@ -1,14 +1,13 @@
-import tqdm
 import numpy as np
 import torch
 import torch.nn.functional as F
+import tqdm
 from torch import nn
 from torch.distributions import MultivariateNormal, Poisson
 from torch_struct import SemiMarkovCRF
 
 from data.corpus import Datasplit
 from models.model import Model, make_optimizer, make_data_loader
-
 from utils.utils import all_equal
 
 BIG_NEG = -1e9
@@ -125,7 +124,8 @@ class SemiMarkovModule(nn.Module):
         else:
             class_indices = valid_classes
             n_classes = len(valid_classes)
-        time_steps = torch.arange(max_length, device=self.poisson_log_rates.device).unsqueeze(-1).expand(max_length, n_classes).float()
+        time_steps = torch.arange(max_length, device=self.poisson_log_rates.device).unsqueeze(-1).expand(max_length,
+                                                                                                         n_classes).float()
         poissons = Poisson(torch.exp(self.poisson_log_rates[class_indices]))
         return poissons.log_prob(time_steps)
 
@@ -142,8 +142,8 @@ class SemiMarkovModule(nn.Module):
             same_symbol = (last == this)
             if max_k is not None:
                 same_symbol = same_symbol & (lengths < max_k - 1)
-            encoded = torch.where(same_symbol, torch.LongTensor([-1]), this)
-            lengths = torch.where(same_symbol, lengths, torch.LongTensor([0]))
+            encoded = torch.where(same_symbol, torch.full([1], -1, device=same_symbol.device, dtype=torch.long), this)
+            lengths = torch.where(same_symbol, lengths, torch.full([1], 0, device=same_symbol.device, dtype=torch.long))
             lengths += 1
             values.append(encoded.unsqueeze(1))
             last = this
@@ -177,7 +177,6 @@ class SemiMarkovModule(nn.Module):
         Returns:
             edges: b x (N-1) x C x C if not add_eos, or b x (N) x (C+1) x (C+1) if add_eos
         """
-        # TODO: implement fixed lengths, and add eos at those positions
         batch, N_1, C_1 = emission_scores.shape
         K, _C = length_scores.shape
         if K > N_1:
@@ -210,7 +209,7 @@ class SemiMarkovModule(nn.Module):
             emission_augmented = torch.full((b, N, C), BIG_NEG, device=emission_scores.device)
             for i, length in enumerate(lengths):
                 emission_augmented[i, :length, :C_1] = emission_scores[i, :length]
-                emission_augmented[:, length, C_1] = 0
+                emission_augmented[i, length, C_1] = 0
             # emission_augmented[:, :N_1, :C_1] = emission_scores
             # emission_augmented[:, lengths, C_1] = 0
             # emission_augmented[:, N_1, C_1] = 0
@@ -232,8 +231,12 @@ class SemiMarkovModule(nn.Module):
         # add emission scores
         # TODO: progressive adding
         for k in range(1, K):
-            scores[:, :, k, :, :] += sliding_sum(emission_augmented, k).view(b, N, 1, C)[:, :N - 1]
-            scores[:, N - 1 - k, k, :, :] += emission_augmented[:, N - 1].view(b, C, 1)
+            # scores[:, :, k, :, :] += sliding_sum(emission_augmented, k).view(b, N, 1, C)[:, :N - 1]
+            # scores[:, N - 1 - k, k, :, :] += emission_augmented[:, N - 1].view(b, C, 1)
+            for i in range(b):
+                length = lengths[i]
+                scores[i, :length - 1, k, :, :] += sliding_sum(emission_augmented, k).view(b, N, 1, C)[i, :length - 1]
+                scores[i, length - 1 - k, k, :, :] += emission_augmented[i, length - 1].view(C, 1)
 
         # for n in range(N):
         #     for k in range(K):
@@ -244,7 +247,7 @@ class SemiMarkovModule(nn.Module):
 
     def add_eos(self, spans, lengths):
         b, N = spans.size()
-        augmented = torch.cat([spans, torch.full((b,), -1).long().unsqueeze(-1)], dim=1)
+        augmented = torch.cat([spans, torch.full([b, 1], -1, device=spans.device, dtype=torch.long)], dim=1)
         # assert (augmented[torch.arange(b), lengths] == -1).all()
         augmented[torch.arange(b), lengths] = self.n_classes
         return augmented
@@ -374,12 +377,20 @@ class SemiMarkovModel(Model):
     def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
         self.model.train()
         optimizer = make_optimizer(self.args, self.model.parameters())
-        loader = make_data_loader(self.args, train_data, shuffle=True, batch_size=1)
-
-        all_features = [sample['features'] for batch in loader for sample in batch]
+        big_loader = make_data_loader(self.args, train_data, shuffle=True, batch_size=100)
+        samp = next(iter(big_loader))
+        big_features = samp['features']
+        big_lengths = samp['lengths']
         if self.args.cuda:
-            all_features = [feats.cuda() for feats in all_features]
-        self.model.initialize_gaussian_from_feature_list(all_features)
+            big_features = big_features.cuda()
+            big_lengths = big_lengths.cuda()
+        self.model.initialize_gaussian(big_features, big_lengths)
+
+        loader = make_data_loader(self.args, train_data, shuffle=True, batch_size=self.args.batch_size)
+
+        # all_features = [sample['features'] for batch in loader for sample in batch]
+        # if self.args.cuda:
+        #     all_features = [feats.cuda() for feats in all_features]
 
         C = self.n_classes
         K = self.args.sm_max_span_length
@@ -387,43 +398,43 @@ class SemiMarkovModel(Model):
         for epoch in range(self.args.epochs):
             losses = []
             for batch in tqdm.tqdm(loader):
-                for sample in batch:
-                    # if self.args.cuda:
-                    #     features = features.cuda()
-                    #     task_indices = task_indices.cuda()
-                    #     gt_single = gt_single.cuda()
-                    task = sample['task_name']
-                    video = sample['video_name']
-                    features = sample['features']
-                    labels = sample['gt_single']
-                    task_indices = sample['task_indices']
+                # if self.args.cuda:
+                #     features = features.cuda()
+                #     task_indices = task_indices.cuda()
+                #     gt_single = gt_single.cuda()
+                tasks = batch['task_name']
+                videos = batch['video_name']
+                features = batch['features']
+                labels = batch['gt_single']
+                task_indices = batch['task_indices']
+                lengths = batch['lengths']
 
-                    # assert len( task_indices) == self.n_classes, "remove_background and multi-task fit() not implemented"
+                # assert len( task_indices) == self.n_classes, "remove_background and multi-task fit() not implemented"
 
-                    # add a batch dimension
-                    lengths = torch.LongTensor([features.size(0)]).unsqueeze(0)
-                    features = features.unsqueeze(0)
-                    labels = labels.unsqueeze(0)
-                    task_indices = task_indices.unsqueeze(0)
+                # # add a batch dimension
+                # lengths = torch.LongTensor([features.size(0)]).unsqueeze(0)
+                # features = features.unsqueeze(0)
+                # labels = labels.unsqueeze(0)
+                # task_indices = task_indices.unsqueeze(0)
 
-                    if self.args.cuda:
-                        features = features.cuda()
-                        lengths = lengths.cuda()
-                        labels = labels.cuda()
+                if self.args.cuda:
+                    features = features.cuda()
+                    lengths = lengths.cuda()
+                    labels = labels.cuda()
 
-                    if use_labels:
-                        spans = SemiMarkovModule.labels_to_spans(labels, max_k=K)
-                    else:
-                        spans = None
+                if use_labels:
+                    spans = SemiMarkovModule.labels_to_spans(labels, max_k=K)
+                else:
+                    spans = None
 
-                    this_loss = -self.model.log_likelihood(features,
-                                                           lengths,
-                                                           valid_classes_per_instance=task_indices,
-                                                           spans=spans,
-                                                           add_eos=True)
-                    this_loss.backward()
+                this_loss = -self.model.log_likelihood(features,
+                                                       lengths,
+                                                       valid_classes_per_instance=task_indices,
+                                                       spans=spans,
+                                                       add_eos=True)
+                this_loss.backward()
 
-                    losses.append(this_loss.item())
+                losses.append(this_loss.item())
                 # TODO: grad clipping?
                 optimizer.step()
                 self.model.zero_grad()
@@ -432,26 +443,29 @@ class SemiMarkovModel(Model):
     def predict(self, test_data):
         self.model.eval()
         predictions = {}
-        loader = make_data_loader(self.args, test_data, shuffle=False, batch_size=1)
+        loader = make_data_loader(self.args, test_data, shuffle=False, batch_size=self.args.batch_size)
         for batch in loader:
-            for sample in batch:
-                features = sample['features']
-                task_indices = sample['task_indices']
+            features = batch['features']
+            task_indices = batch['task_indices']
+            lengths = batch['lengths']
 
-                # add a batch dimension
-                lengths = torch.LongTensor([features.size(0)]).unsqueeze(0)
-                features = features.unsqueeze(0)
-                task_indices = task_indices.unsqueeze(0)
+            # add a batch dimension
+            # lengths = torch.LongTensor([features.size(0)]).unsqueeze(0)
+            # features = features.unsqueeze(0)
+            # task_indices = task_indices.unsqueeze(0)
 
-                if self.args.cuda:
-                    features = features.cuda()
-                    task_indices = task_indices.cuda()
-                video = sample['video_name']
+            if self.args.cuda:
+                features = features.cuda()
+                task_indices = [ti.cuda() for ti in task_indices]
+                lengths = lengths.cuda()
 
-                pred_spans = self.model.viterbi(features, lengths, task_indices, add_eos=True)
-                pred_labels = SemiMarkovModule.spans_to_labels(pred_spans)
-                pred_labels_trim = self.model.trim(pred_labels, lengths, check_eos=True)
+            videos = batch['video_name']
 
-                assert len(pred_labels_trim) == 1, "batch size should be 1"
-                predictions[video] = pred_labels_trim[0].numpy()
+            pred_spans = self.model.viterbi(features, lengths, task_indices, add_eos=True)
+            pred_labels = SemiMarkovModule.spans_to_labels(pred_spans)
+            pred_labels_trim_s = self.model.trim(pred_labels, lengths, check_eos=True)
+
+            # assert len(pred_labels_trim_s) == 1, "batch size should be 1"
+            for video, pred_labels_trim in zip(videos, pred_labels_trim_s):
+                predictions[video] = pred_labels_trim.numpy()
         return predictions
