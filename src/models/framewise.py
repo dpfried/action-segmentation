@@ -5,6 +5,8 @@ import torch.nn as nn
 from models.model import Model, make_optimizer, make_data_loader
 from sklearn.mixture import GaussianMixture
 
+from models.semimarkov import semimarkov_sufficient_stats
+
 from data.corpus import Datasplit
 
 
@@ -114,13 +116,6 @@ class FramewiseDiscriminative(Model):
         return predictions
 
 
-def get_diagonal_precisions_cholesky(data):
-    # data: num_points x feat_dim
-    model = GaussianMixture(n_components=1, covariance_type='diag')
-    responsibilities = np.ones((data.shape[0], 1))
-    model._initialize(data, responsibilities)
-    return model.precisions_cholesky_
-
 class FramewiseGaussianMixture(Model):
     @classmethod
     def add_args(cls, parser):
@@ -140,28 +135,8 @@ class FramewiseGaussianMixture(Model):
 
     def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
         assert use_labels
-        tied_diag = self.args.gm_covariance == 'tied_diag'
-        if tied_diag:
-            model = GaussianMixture(self.n_classes, covariance_type='diag')
-        else:
-            model = GaussianMixture(self.n_classes, covariance_type=self.args.gm_covariance)
-        X_l = []
-        r_l = []
-        # for i in tqdm.tqdm(list(range(len(train_data))), ncols=80):
-        for i in range(len(train_data)):
-            sample = train_data.__getitem__(i, wrap_torch=False)
-            X = sample['features']
-            X_l.append(X)
-            r = np.zeros((X.shape[0], self.n_classes))
-            r[np.arange(X.shape[0]), sample['gt_single']] = 1
-            assert r.sum() == X.shape[0]
-            r_l.append(r)
-        X_arr = np.vstack(X_l)
-        r_arr = np.vstack(r_l)
-        model._initialize(X_arr, r_arr)
-        if tied_diag:
-            model.precisions_cholesky_[:] = np.copy(get_diagonal_precisions_cholesky(X_arr))
-        self.model = model
+        gmm, stats = semimarkov_sufficient_stats(train_data, self.args.gm_covariance, self.n_classes)
+        self.model = gmm
 
     def predict(self, test_data):
         assert self.model is not None

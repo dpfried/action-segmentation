@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import tqdm
+from sklearn.mixture import GaussianMixture
 from torch import nn
 from torch.distributions import MultivariateNormal, Poisson
 from torch_struct import SemiMarkovCRF
@@ -11,6 +12,67 @@ from models.model import Model, make_optimizer, make_data_loader
 from utils.utils import all_equal
 
 BIG_NEG = -1e9
+
+
+def get_diagonal_precisions_cholesky(data):
+    # data: num_points x feat_dim
+    model = GaussianMixture(n_components=1, covariance_type='diag')
+    responsibilities = np.ones((data.shape[0], 1))
+    model._initialize(data, responsibilities)
+    return model.precisions_cholesky_
+
+
+def semimarkov_sufficient_stats(feature_list, label_list, covariance_type, n_classes, max_k=None):
+    assert len(feature_list) == len(label_list)
+    tied_diag = covariance_type == 'tied_diag'
+    if tied_diag:
+        emissions = GaussianMixture(n_classes, covariance_type='diag')
+    else:
+        emissions = GaussianMixture(n_classes, covariance_type=covariance_type)
+    X_l = []
+    r_l = []
+
+    span_counts = np.zeros(n_classes, dtype=np.float32)
+    span_lengths = np.zeros(n_classes, dtype=np.float32)
+    span_start_counts = np.zeros(n_classes, dtype=np.float32)
+    # to, from
+    span_transition_counts = np.zeros((n_classes, n_classes), dtype=np.float32)
+
+    instance_count = 0
+
+    # for i in tqdm.tqdm(list(range(len(train_data))), ncols=80):
+    for X, labels in zip(feature_list, label_list):
+        X_l.append(X)
+        r = np.zeros((X.shape[0], n_classes))
+        r[np.arange(X.shape[0]), labels] = 1
+        assert r.sum() == X.shape[0]
+        r_l.append(r)
+        spans = SemiMarkovModule.labels_to_spans(labels.unsqueeze(0), max_k)
+        # symbol, length
+        rle_spans = SemiMarkovModule.rle_spans(spans, torch.LongTensor([spans.size(1)]))[0]
+        last_symbol = None
+        for index, (symbol, length) in enumerate(rle_spans):
+            if index == 0:
+                span_start_counts[symbol] += 1
+            span_counts[symbol] += 1
+            span_lengths[symbol] += length
+            if last_symbol is not None:
+                span_transition_counts[symbol, last_symbol] += 1
+            last_symbol = symbol
+        instance_count += 1
+
+    X_arr = np.vstack(X_l)
+    r_arr = np.vstack(r_l)
+    emissions._initialize(X_arr, r_arr)
+    if tied_diag:
+        emissions.precisions_cholesky_[:] = np.copy(get_diagonal_precisions_cholesky(X_arr))
+    return emissions, {
+        'span_counts': span_counts,
+        'span_lengths': span_lengths,
+        'span_start_counts': span_start_counts,
+        'span_transition_counts': span_transition_counts,
+        'instance_count': instance_count,
+    }
 
 
 def sliding_sum(inputs, k):
@@ -54,6 +116,37 @@ class SemiMarkovModule(nn.Module):
         torch.nn.init.uniform_(self.init_logits, 0, 1)
 
         self.max_k = max_k
+
+    def fit_supervised(self, feature_list, label_list, state_smoothing=1e-2, length_smoothing=1e-1):
+        emission_gmm, stats = semimarkov_sufficient_stats(
+            feature_list, label_list,
+            covariance_type='tied_diag',
+            n_classes=self.n_classes,
+            max_k=self.max_k,
+        )
+        init_probs = (stats['span_start_counts'] + state_smoothing) / float(
+            stats['instance_count'] + state_smoothing * self.n_classes)
+        assert np.allclose(init_probs.sum(), 1.0), init_probs
+        self.init_logits.data.zero_()
+        self.init_logits.data.add_(torch.from_numpy(init_probs).log())
+
+        smoothed_trans_counts = stats['span_transition_counts'] + state_smoothing
+
+        trans_probs = smoothed_trans_counts / smoothed_trans_counts.sum(axis=0)[None, :]
+        # to, from -- so rows should sum to 1
+        assert np.allclose(trans_probs.sum(axis=0), 1.0, rtol=1e-3), (trans_probs.sum(axis=0), trans_probs)
+        self.transition_logits.data.zero_()
+        self.transition_logits.data.add_(torch.from_numpy(trans_probs).log())
+
+        mean_lengths = (stats['span_lengths'] + length_smoothing) / (stats['span_counts'] + length_smoothing)
+        self.poisson_log_rates.data.zero_()
+        self.poisson_log_rates.data.add_(torch.from_numpy(mean_lengths).log())
+
+        self.gaussian_means.data.zero_()
+        self.gaussian_means.data.add_(torch.from_numpy(emission_gmm.means_).float())
+
+        self.gaussian_cov.data.zero_()
+        self.gaussian_cov.data.add_(torch.diag(torch.from_numpy(emission_gmm.covariances_[0]).float()))
 
     def initialize_gaussian_from_feature_list(self, features):
         feats = torch.cat(features, dim=0)
@@ -148,6 +241,31 @@ class SemiMarkovModule(nn.Module):
             values.append(encoded.unsqueeze(1))
             last = this
         return torch.cat(values, dim=1)
+
+    @staticmethod
+    def rle_spans(spans, lengths):
+        b, T = spans.size()
+        all_rle = []
+        for i in range(b):
+            this_rle = []
+            this_spans = spans[i, :lengths[i]]
+            current_symbol = None
+            count = 0
+            for symbol in this_spans:
+                symbol = symbol.item()
+                if current_symbol is None or symbol != -1:
+                    if current_symbol is not None:
+                        assert count > 0
+                        this_rle.append((current_symbol, count))
+                    count = 0
+                    current_symbol = symbol
+                count += 1
+            if current_symbol is not None:
+                assert count > 0
+                this_rle.append((current_symbol, count))
+            assert sum(count for sym, count in this_rle) == lengths[i]
+            all_rle.append(this_rle)
+        return all_rle
 
     @staticmethod
     def spans_to_labels(spans):
@@ -356,6 +474,8 @@ class SemiMarkovModel(Model):
     @classmethod
     def add_args(cls, parser):
         parser.add_argument('--sm_max_span_length', type=int)
+        parser.add_argument('--sm_supervised_state_smoothing', type=float, default=1e-2)
+        parser.add_argument('--sm_supervised_length_smoothing', type=float, default=1e-1)
 
     @classmethod
     def from_args(cls, args, train_data):
@@ -375,8 +495,21 @@ class SemiMarkovModel(Model):
         if args.cuda:
             self.model.cuda()
 
+    def fit_supervised(self, train_data: Datasplit):
+        loader = make_data_loader(self.args, train_data, shuffle=False, batch_size=1)
+        features, labels = [], []
+        for batch in loader:
+            features.append(batch['features'].squeeze(0))
+            labels.append(batch['gt_single'].squeeze(0))
+        self.model.fit_supervised(features, labels, self.args.sm_supervised_state_smoothing,
+                                  self.args.sm_supervised_length_smoothing)
+
     def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
         self.model.train()
+        if use_labels:
+            self.fit_supervised(train_data)
+            callback_fn(0, {})
+            return
         optimizer = make_optimizer(self.args, self.model.parameters())
         big_loader = make_data_loader(self.args, train_data, shuffle=True, batch_size=100)
         samp = next(iter(big_loader))
@@ -398,7 +531,7 @@ class SemiMarkovModel(Model):
 
         for epoch in range(self.args.epochs):
             losses = []
-            for batch in tqdm.tqdm(loader):
+            for batch in tqdm.tqdm(loader, ncols=80):
                 # if self.args.cuda:
                 #     features = features.cuda()
                 #     task_indices = task_indices.cuda()

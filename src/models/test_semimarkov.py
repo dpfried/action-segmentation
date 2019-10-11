@@ -40,7 +40,7 @@ class ToyDataset(Dataset):
 
 
 def synthetic_data(num_data_points=200, C=3, N=100, K=5, num_classes_per_instance=None):
-    def make_synthetic_features(class_labels, shift_constant=2.0):
+    def make_synthetic_features(class_labels, shift_constant=1.0):
         _batch_size, _N = class_labels.size()
         f = torch.randn((_batch_size, _N, C))
         shift = torch.zeros_like(f)
@@ -88,12 +88,14 @@ def partition_rows(arr, N):
 
 
 def test_learn_synthetic():
-    C = 6
-    MAX_K = 40
+    C = 3
+    MAX_K = 20
     K = 5
     N = 20
     N_train = 150
     N_test = 50
+
+    closed_form_supervised = True
 
     supervised = True
 
@@ -122,46 +124,55 @@ def test_learn_synthetic():
     model.train()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-1)
 
-    for epoch in range(epochs):
-        losses = []
-        for batch in train_loader:
-            # if self.args.cuda:
-            #     features = features.cuda()
-            #     task_indices = task_indices.cuda()
-            #     gt_single = gt_single.cuda()
-            features = batch['features']
-            lengths = batch['lengths']
-            spans = batch['spans']
-            valid_classes = batch['valid_classes']
-            this_N = lengths.max().item()
-            features = features[:, :this_N, :]
-            spans = spans[:, :this_N]
+    if supervised and closed_form_supervised:
+        train_features = []
+        train_labels = []
+        for i in range(len(train_data)):
+            sample = train_data[i]
+            train_features.append(sample['features'])
+            train_labels.append(sample['labels'])
+        model.fit_supervised(train_features, train_labels)
+    else:
+        for epoch in range(epochs):
+            losses = []
+            for batch in train_loader:
+                # if self.args.cuda:
+                #     features = features.cuda()
+                #     task_indices = task_indices.cuda()
+                #     gt_single = gt_single.cuda()
+                features = batch['features']
+                lengths = batch['lengths']
+                spans = batch['spans']
+                valid_classes = batch['valid_classes']
+                this_N = lengths.max().item()
+                features = features[:, :this_N, :]
+                spans = spans[:, :this_N]
 
-            if supervised:
-                spans_sup = spans
-            else:
-                spans_sup = None
+                if supervised:
+                    spans_sup = spans
+                else:
+                    spans_sup = None
 
-            this_loss = -model.log_likelihood(features, lengths, valid_classes_per_instance=valid_classes,
-                                              spans=spans_sup)
-            this_loss.backward()
+                this_loss = -model.log_likelihood(features, lengths, valid_classes_per_instance=valid_classes,
+                                                  spans=spans_sup)
+                this_loss.backward()
 
-            losses.append(this_loss.item())
+                losses.append(this_loss.item())
 
-            optimizer.step()
-            model.zero_grad()
-        train_acc, train_remap_acc, _ = predict_synthetic(model, train_loader)
-        test_acc, test_remap_acc, _ = predict_synthetic(model, test_loader)
-        # print(train_acc)
-        # print(train_remap_acc)
-        # print(test_acc)
-        # print(test_remap_acc)
-        print("epoch {} avg loss: {:.4f}\ttrain acc: {:.2f}\ttest acc: {:.2f}".format(
-            epoch,
-            np.mean(losses),
-            train_acc if supervised else train_remap_acc,
-            test_acc if supervised else test_remap_acc,
-        ))
+                optimizer.step()
+                model.zero_grad()
+            train_acc, train_remap_acc, _ = predict_synthetic(model, train_loader)
+            test_acc, test_remap_acc, _ = predict_synthetic(model, test_loader)
+            # print(train_acc)
+            # print(train_remap_acc)
+            # print(test_acc)
+            # print(test_remap_acc)
+            print("epoch {} avg loss: {:.4f}\ttrain acc: {:.2f}\ttest acc: {:.2f}".format(
+                epoch,
+                np.mean(losses),
+                train_acc if supervised else train_remap_acc,
+                test_acc if supervised else test_remap_acc,
+            ))
 
     return model, train_loader, test_loader
 
@@ -239,8 +250,13 @@ def predict_synthetic(model, dataloader):
 def test_labels_and_spans():
     position_labels = torch.LongTensor([[0, 1, 1, 2, 2, 2], [0, 1, 2, 3, 3, 4]])
     spans = torch.LongTensor([[0, 1, -1, 2, -1, -1], [0, 1, 2, 3, -1, 4]])
+    rle = [[(0, 1), (1, 2), (2, 3)], [(0, 1), (1, 1), (2, 1), (3, 2), (4, 1)]]
     assert (SemiMarkovModule.labels_to_spans(position_labels, max_k=10) == spans).all()
     assert (SemiMarkovModule.spans_to_labels(spans) == position_labels).all()
+    assert SemiMarkovModule.rle_spans(spans, lengths=torch.LongTensor([6, 6])) == rle
+    trunc_lengths = torch.LongTensor([5, 6])
+    trunc_rle = [[(0, 1), (1, 2), (2, 2)], [(0, 1), (1, 1), (2, 1), (3, 2), (4, 1)]]
+    assert SemiMarkovModule.rle_spans(spans, lengths=trunc_lengths) == trunc_rle
 
     rand_labels = torch.randint(low=0, high=3, size=(5, 20))
     assert (SemiMarkovModule.spans_to_labels(
