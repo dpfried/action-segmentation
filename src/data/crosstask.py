@@ -398,16 +398,16 @@ def pca_and_serialize_features(release_root, raw_feature_root, output_feature_ro
 if __name__ == "__main__":
     _release_root = 'data/crosstask/crosstask_release'
     _raw_feature_root = 'data/crosstask/crosstask_features'
-    _remove_background = False
     _components = 200
     _task_sets = ['primary']
-    for _by_task in [False, True]:
-        _output_feature_root = 'data/crosstask/crosstask_processed/crosstask_{}_pca-{}_{}_{}'.format(
-            '+'.join(_task_sets),
-            _components,
-            'no-bkg' if _remove_background else 'with-bkg',
-            'by-task' if _by_task else 'all-tasks',
-        )
+    for _remove_background in [False, True]:
+        for _by_task in [False, True]:
+            _output_feature_root = 'data/crosstask/crosstask_processed/crosstask_{}_pca-{}_{}_{}'.format(
+                '+'.join(_task_sets),
+                _components,
+                'no-bkg' if _remove_background else 'with-bkg',
+                'by-task' if _by_task else 'all-tasks',
+            )
 
-        pca_and_serialize_features(_release_root, _raw_feature_root, _output_feature_root, _remove_background,
-                                   pca_components_per_group=_components, by_task=_by_task, task_sets=_task_sets)
+            pca_and_serialize_features(_release_root, _raw_feature_root, _output_feature_root, _remove_background,
+                                    pca_components_per_group=_components, by_task=_by_task, task_sets=_task_sets)

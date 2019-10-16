@@ -35,6 +35,7 @@ def add_data_args(parser):
     group.add_argument('--batch_size', type=int, default=5)
     group.add_argument('--remove_background', action='store_true')
     group.add_argument('--pca_components_per_group', type=int, default=100)
+    group.add_argument('--pca_no_background', action='store_true')
     group.add_argument('--crosstask_feature_groups', choices=['i3d', 'resnet', 'audio'], default=['i3d', 'resnet'])
 
 
@@ -124,8 +125,10 @@ def make_data_splits(args):
         if args.features == 'pca':
             max_components = 200
             assert args.pca_components_per_group <= max_components
-            feature_root = 'data/crosstask/crosstask_processed/crosstask_primary_pca-{}_with-bkg_by-task'.format(
-                max_components)
+            feature_root = 'data/crosstask/crosstask_processed/crosstask_primary_pca-{}_{}-bkg_by-task'.format(
+                max_components,
+                "no" if args.pca_no_background else "with",
+            )
             dimensions_per_feature_group = {
                 feature_group: args.pca_components_per_group
                 for feature_group in args.crosstask_feature_groups
