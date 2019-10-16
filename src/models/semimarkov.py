@@ -126,6 +126,7 @@ class SemiMarkovModule(nn.Module):
         )
         init_probs = (stats['span_start_counts'] + state_smoothing) / float(
             stats['instance_count'] + state_smoothing * self.n_classes)
+        #init_probs[np.isnan(init_probs)] = 0
         assert np.allclose(init_probs.sum(), 1.0), init_probs
         self.init_logits.data.zero_()
         self.init_logits.data.add_(torch.from_numpy(init_probs).log())
@@ -133,6 +134,7 @@ class SemiMarkovModule(nn.Module):
         smoothed_trans_counts = stats['span_transition_counts'] + state_smoothing
 
         trans_probs = smoothed_trans_counts / smoothed_trans_counts.sum(axis=0)[None, :]
+        #trans_probs[np.isnan(trans_probs)] = 0
         # to, from -- so rows should sum to 1
         assert np.allclose(trans_probs.sum(axis=0), 1.0, rtol=1e-3), (trans_probs.sum(axis=0), trans_probs)
         self.transition_logits.data.zero_()
@@ -476,6 +478,7 @@ class SemiMarkovModel(Model):
         parser.add_argument('--sm_max_span_length', type=int)
         parser.add_argument('--sm_supervised_state_smoothing', type=float, default=1e-2)
         parser.add_argument('--sm_supervised_length_smoothing', type=float, default=1e-1)
+        parser.add_argument('--sm_supervised_gradient_descent', action='store_true')
 
     @classmethod
     def from_args(cls, args, train_data):
@@ -506,7 +509,7 @@ class SemiMarkovModel(Model):
 
     def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
         self.model.train()
-        if use_labels:
+        if use_labels and not self.args.sm_supervised_gradient_descent:
             self.fit_supervised(train_data)
             callback_fn(0, {})
             return

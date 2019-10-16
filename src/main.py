@@ -1,3 +1,4 @@
+import os
 import argparse
 import pickle
 import pprint
@@ -21,20 +22,27 @@ CLASSIFIERS = {
 }
 
 
+def add_serialization_args(parser):
+    group = parser.add_argument_group('serialization')
+    group.add_argument('--model_output_path')
+
+
 def add_data_args(parser):
-    parser.add_argument('--dataset', choices=['crosstask', 'breakfast'], default='crosstask')
-    parser.add_argument('--num_workers', type=int, default=1)
-    parser.add_argument('--features', choices=['raw', 'pca'], default='raw')
-    parser.add_argument('--batch_size', type=int, default=5)
-    parser.add_argument('--remove_background', action='store_true')
-    parser.add_argument('--pca_components_per_group', type=int, default=100)
-    parser.add_argument('--crosstask_feature_groups', choices=['i3d', 'resnet', 'audio'], default=['i3d', 'resnet'])
+    group = parser.add_argument_group('data')
+    group.add_argument('--dataset', choices=['crosstask', 'breakfast'], default='crosstask')
+    group.add_argument('--num_workers', type=int, default=1)
+    group.add_argument('--features', choices=['raw', 'pca'], default='raw')
+    group.add_argument('--batch_size', type=int, default=5)
+    group.add_argument('--remove_background', action='store_true')
+    group.add_argument('--pca_components_per_group', type=int, default=100)
+    group.add_argument('--crosstask_feature_groups', choices=['i3d', 'resnet', 'audio'], default=['i3d', 'resnet'])
 
 
 def add_classifier_args(parser):
-    parser.add_argument('--classifier', required=True, choices=CLASSIFIERS.keys())
-    parser.add_argument('--training', choices=['supervised', 'unsupervised'], default='supervised')
-    parser.add_argument('--cuda', action='store_true')
+    group = parser.add_argument_group('classifier')
+    group.add_argument('--classifier', required=True, choices=CLASSIFIERS.keys())
+    group.add_argument('--training', choices=['supervised', 'unsupervised'], default='supervised')
+    group.add_argument('--cuda', action='store_true')
     for name, cls in CLASSIFIERS.items():
         cls.add_args(parser)
 
@@ -93,9 +101,18 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
     if dev_mof_by_epoch:
         best_dev_epoch, best_dev_mof = max(dev_mof_by_epoch.items(), key=lambda t: t[1])
         logger.debug("best dev mov {:.4f} in epoch {}".format(best_dev_mof, best_dev_epoch))
-        return pickle.loads(models_by_epoch[best_dev_epoch])
+        best_model = pickle.loads(models_by_epoch[best_dev_epoch])
     else:
-        return model
+        best_model = model
+
+    if args.model_output_path:
+        os.makedirs(args.model_output_path, exist_ok=True)
+        model_fname = os.path.join(args.model_output_path, '{}.pkl'.format(split_name))
+        print("writing model to {}".format(model_fname))
+        with open(model_fname, 'wb') as f:
+            pickle.dump(best_model, f)
+
+    return best_model
 
 
 def make_data_splits(args):
@@ -156,6 +173,7 @@ def make_data_splits(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    add_serialization_args(parser)
     add_data_args(parser)
     add_classifier_args(parser)
     add_training_args(parser)
