@@ -131,7 +131,7 @@ class SemiMarkovModule(nn.Module):
         init_probs[np.isnan(init_probs)] = 0
         # assert np.allclose(init_probs.sum(), 1.0), init_probs
         self.init_logits.data.zero_()
-        self.init_logits.data.add_(torch.from_numpy(init_probs).log())
+        self.init_logits.data.add_(torch.from_numpy(init_probs).to(device=self.init_logits.device).log())
 
         smoothed_trans_counts = stats['span_transition_counts'] + state_smoothing
 
@@ -140,17 +140,17 @@ class SemiMarkovModule(nn.Module):
         # to, from -- so rows should sum to 1
         # assert np.allclose(trans_probs.sum(axis=0), 1.0, rtol=1e-3), (trans_probs.sum(axis=0), trans_probs)
         self.transition_logits.data.zero_()
-        self.transition_logits.data.add_(torch.from_numpy(trans_probs).log())
+        self.transition_logits.data.add_(torch.from_numpy(trans_probs).to(device=self.transition_logits.device).log())
 
         mean_lengths = (stats['span_lengths'] + length_smoothing) / (stats['span_counts'] + length_smoothing)
         self.poisson_log_rates.data.zero_()
-        self.poisson_log_rates.data.add_(torch.from_numpy(mean_lengths).log())
+        self.poisson_log_rates.data.add_(torch.from_numpy(mean_lengths).to(device=self.poisson_log_rates.device).log())
 
         self.gaussian_means.data.zero_()
-        self.gaussian_means.data.add_(torch.from_numpy(emission_gmm.means_).float())
+        self.gaussian_means.data.add_(torch.from_numpy(emission_gmm.means_).to(device=self.gaussian_means.device).float())
 
         self.gaussian_cov.data.zero_()
-        self.gaussian_cov.data.add_(torch.diag(torch.from_numpy(emission_gmm.covariances_[0]).float()))
+        self.gaussian_cov.data.add_(torch.diag(torch.from_numpy(emission_gmm.covariances_[0]).to(device=self.gaussian_cov.device).float()))
 
     def initialize_gaussian_from_feature_list(self, features):
         feats = torch.cat(features, dim=0)
@@ -438,7 +438,17 @@ class SemiMarkovModule(nn.Module):
             # spans = spans[:,:this_N]
             parts = SemiMarkovCRF.struct.to_parts(eos_spans_mapped, (eos_C, K),
                                                   lengths=eos_lengths).type_as(scores)
-            log_likelihood = dist.log_prob(parts).mean()
+
+            # this maximizes p(x, y)
+            d = parts.dim()
+            batch_dims = range(d - len(dist.event_shape))
+            log_likelihood = dist.struct().score(
+                dist.log_potentials,
+                parts.type_as(dist.log_potentials),
+                batch_dims=batch_dims,
+            ).mean()
+            # this maximizes p(y | x)
+            # log_likelihood = dist.log_prob(parts).mean()
         else:
             log_likelihood = dist.partition.mean()
         return log_likelihood
@@ -481,7 +491,9 @@ class SemiMarkovModel(Model):
         parser.add_argument('--sm_max_span_length', type=int)
         parser.add_argument('--sm_supervised_state_smoothing', type=float, default=1e-2)
         parser.add_argument('--sm_supervised_length_smoothing', type=float, default=1e-1)
-        parser.add_argument('--sm_supervised_gradient_descent', action='store_true')
+        parser.add_argument('--sm_supervised_method',
+                            choices=['closed-form', 'gradient-based', 'closed-then-gradient'],
+                            default='closed-form')
 
     @classmethod
     def from_args(cls, args, train_data):
@@ -512,10 +524,14 @@ class SemiMarkovModel(Model):
 
     def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
         self.model.train()
-        if use_labels and not self.args.sm_supervised_gradient_descent:
+        initialize = True
+        if use_labels and self.args.sm_supervised_method in ['closed-form', 'closed-then-gradient']:
             self.fit_supervised(train_data)
             callback_fn(0, {})
-            return
+            if self.args.sm_supervised_method == 'closed-then-gradient':
+                initialize = False
+            else:
+                return
         optimizer = make_optimizer(self.args, self.model.parameters())
         big_loader = make_data_loader(self.args, train_data, shuffle=True, batch_size=100)
         samp = next(iter(big_loader))
@@ -524,7 +540,9 @@ class SemiMarkovModel(Model):
         if self.args.cuda:
             big_features = big_features.cuda()
             big_lengths = big_lengths.cuda()
-        self.model.initialize_gaussian(big_features, big_lengths)
+
+        if initialize:
+            self.model.initialize_gaussian(big_features, big_lengths)
 
         loader = make_data_loader(self.args, train_data, shuffle=True, batch_size=self.args.batch_size)
 
