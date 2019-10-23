@@ -248,6 +248,7 @@ class CrosstaskDatasplit(Datasplit):
                     name=video,
                     has_label=has_label,
                     cache_features=self._corpus._cache_features,
+                    features_contain_background=self._corpus._features_contain_background,
                 )
 
 
@@ -269,10 +270,12 @@ class CrosstaskCorpus(Corpus):
 
     BACKGROUND_LABEL = "BKG"
 
-    def __init__(self, release_root, feature_root, dimensions_per_feature_group=None):
+    def __init__(self, release_root, feature_root, dimensions_per_feature_group=None, features_contain_background=True):
+        print("feature root: {}".format(feature_root))
         self._release_root = release_root
         self._feature_root = feature_root
         self._dimensions_per_feature_group = dimensions_per_feature_group
+        self._features_contain_background = features_contain_background
 
         all_task_sets = list(sorted(CrosstaskCorpus.TASK_SET_PATHS.keys()))
 
@@ -410,4 +413,4 @@ if __name__ == "__main__":
             )
 
             pca_and_serialize_features(_release_root, _raw_feature_root, _output_feature_root, _remove_background,
-                                    pca_components_per_group=_components, by_task=_by_task, task_sets=_task_sets)
+                                       pca_components_per_group=_components, by_task=_by_task, task_sets=_task_sets)

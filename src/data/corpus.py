@@ -1,5 +1,6 @@
 # modified from slim_mallow by Anna Kukleva, https://github.com/Annusha/slim_mallow
 
+import os
 import copy
 
 import numpy as np
@@ -18,7 +19,8 @@ WARN_ON_MISMATCH = False
 
 class Video(object):
     def __init__(self, feature_root, K, remove_background, *, nonbackground_timesteps=None,
-                 gt=None, gt_with_background=None, name='', cache_features=False, has_label=True):
+                 gt=None, gt_with_background=None, name='', cache_features=False, has_label=True,
+                 features_contain_background=True):
         """
         Args:
             feature_root (str): path to video representation
@@ -34,6 +36,7 @@ class Video(object):
         self.name = name
         self._cache_features = cache_features
         self._has_label = has_label
+        self._features_contain_background = features_contain_background
 
         assert name
 
@@ -107,13 +110,13 @@ class Video(object):
             self._process_features(self.load_features())
             n_frames = self.n_frames()
         assert n_frames is not None
-        if not self._updated_length and len(self._gt_with_background) != n_frames:
+        if not self._updated_length and (len(self._gt_with_background) != n_frames or not self._features_contain_background):
             self._updated_length = True
             if WARN_ON_MISMATCH:
                 print(self.name, '# of gt and # of frames does not match %d / %d' %
                       (len(self._gt_with_background), n_frames))
 
-            assert len(self._gt_with_background) - n_frames <= FEATURE_LABEL_MISMATCH_TOLERANCE, "len(self._gt) = {}, n_frames = {}".format(len(self._gt), n_frames)
+            assert len(self._gt_with_background) - n_frames <= FEATURE_LABEL_MISMATCH_TOLERANCE, "len(self._gt_with_background) = {}, n_frames = {}".format(len(self._gt_with_background), n_frames)
             min_n = min(len(self._gt_with_background), n_frames)
             # self._gt = self._gt[:min_n]
             # self._gt_with_background = self._gt_with_background[:min_n]
@@ -144,7 +147,12 @@ class Video(object):
 
     def _process_features(self, features):
         if self._n_frames is None:
-            self._n_frames = features.shape[0]
+            if self._features_contain_background:
+                self._n_frames = features.shape[0]
+            else:
+                self._n_frames = len(self._gt_with_background)
+        if not self._features_contain_background:
+            return features
         # zeros = 0
         # for i in range(10):
         #     if np.sum(features[:1]) == 0:
@@ -270,7 +278,10 @@ class Datasplit(Dataset):
 
         # num_timesteps = torch_features.size(0)
         features = video_obj.features()
-        task_indices = sorted(self.groundtruth.indices_by_task[task_name])
+        task_indices = self.groundtruth.indices_by_task[task_name]
+        if self.remove_background:
+            task_indices = set(task_indices) - {self.groundtruth._corpus._background_index}
+        task_indices = sorted(task_indices)
         gt_single = [gt_t[0] for gt_t in video_obj.gt()]
 
         if wrap_torch:
@@ -297,17 +308,27 @@ class Datasplit(Dataset):
     def _load_ground_truth_and_videos(self, remove_background):
         raise NotImplementedError("subclasses should implement _load_ground_truth")
 
-    def accuracy_corpus(self, optimal_assignment: bool, prediction_function, prefix='', verbose=True):
+    def accuracy_corpus(self, optimal_assignment: bool, prediction_function, prefix='', verbose=True, compare_to_folder=None):
         """Calculate metrics as well with previous correspondences between
         gt labels and output labels"""
         stats_by_task = {}
         for task in self._videos_by_task:
             accuracy = Accuracy(verbose=verbose, corpus=self._corpus)
+
             f1_score = F1Score(K=self._K_by_task[task], n_videos=len(self._videos_by_task[task]), verbose=verbose)
             long_gt = []
             long_pr = []
+
+            if compare_to_folder is not None:
+                compare_accuracy = Accuracy(verbose=verbose, corpus=self._corpus)
+                compare_long_gt = []
+                compare_long_pr = []
+
             # long_gt_onhe0 = []
             self.return_stat = {}
+
+            if compare_to_folder is not None:
+                task_mapping = {}
 
             for video_name, video in self._videos_by_task[task].items():
                 # long_gt += list(video._gt_with_0)
@@ -315,31 +336,66 @@ class Datasplit(Dataset):
                 long_gt += list(video.gt())
                 long_pr += list(prediction_function(video))
 
+                if compare_to_folder is not None:
+                    y_true = np.load(os.path.join(compare_to_folder, "{}_y_true.npy".format(video_name)))
+                    y_pred = np.load(os.path.join(compare_to_folder, "{}_y_pred.npy".format(video_name)))
+                    # break ties with background, or earlier steps
+                    trues = y_true.argmax(axis=1)
+                    preds = y_pred.argmax(axis=1)
+
+                    assert len(trues) == len(video.gt())
+                    for t, g in zip(trues, video.gt()):
+                        g = g[0]
+                        if t in task_mapping:
+                            assert task_mapping[t] == g
+                        else:
+                            task_mapping[t] = g
+
+            if compare_to_folder is not None:
+                for video_name, video in self._videos_by_task[task].items():
+                    y_true = np.load(os.path.join(compare_to_folder, "{}_y_true.npy".format(video_name)))
+                    y_pred = np.load(os.path.join(compare_to_folder, "{}_y_pred.npy".format(video_name)))
+                    # break ties with background, or earlier steps
+                    trues = y_true.argmax(axis=1)
+                    preds = y_pred.argmax(axis=1)
+                    compare_long_gt += [[task_mapping[t]] for t in trues]
+                    compare_long_pr += [task_mapping[p] for p in preds]
+
             accuracy.gt_labels = long_gt
             accuracy.predicted_labels = long_pr
-            # if opt.bg:
-            #     # enforce bg class to be bg class
-            #     accuracy.exclude[-1] = [-1]
-            # if not opt.zeros and opt.dataset == 'bf': #''Breakfast' in opt.dataset_root:
-            #     # enforce to SIL class assign nothing
-            #     accuracy.exclude[0] = [-1]
 
-            old_mof, total_fr = accuracy.mof(optimal_assignment, old_gt2label=self._gt2label)
-            self._gt2label = accuracy._gt2cluster
-            self._label2gt = {}
-            for key, val in self._gt2label.items():
-                try:
-                    self._label2gt[val[0]] = key
-                except IndexError:
-                    pass
-            acc_cur = accuracy.mof_val()
-            if verbose:
-                logger.debug('%s Task: %s' % (prefix, task))
-                logger.debug('%s MoF val: ' % prefix + str(acc_cur))
-                logger.debug('%s previous dic -> MoF val: ' % prefix + str(float(old_mof) / total_fr))
+            named_accuracies = [('this_run', accuracy)]
 
-            accuracy.mof_classes()
-            accuracy.iou_classes()
+            if compare_to_folder is not None:
+                compare_accuracy.gt_labels = compare_long_gt
+                compare_accuracy.predicted_labels = compare_long_pr
+                named_accuracies.append(('comparison', compare_accuracy))
+
+            for acc_name, acc in named_accuracies:
+                # if opt.bg:
+                #     # enforce bg class to be bg class
+                #     acc.exclude[-1] = [-1]
+                # if not opt.zeros and opt.dataset == 'bf': #''Breakfast' in opt.dataset_root:
+                #     # enforce to SIL class assign nothing
+                #     acc.exclude[0] = [-1]
+
+                old_mof, total_fr = acc.mof(optimal_assignment, old_gt2label=self._gt2label)
+                if acc_name == 'this_run':
+                    self._gt2label = acc._gt2cluster
+                    self._label2gt = {}
+                    for key, val in self._gt2label.items():
+                        try:
+                            self._label2gt[val[0]] = key
+                        except IndexError:
+                            pass
+                acc_cur = acc.mof_val()
+                if verbose:
+                    logger.debug('%s Task: %s' % (prefix, task))
+                    logger.debug('%s MoF val: ' % prefix + str(acc_cur))
+                    logger.debug('%s previous dic -> MoF val: ' % prefix + str(float(old_mof) / total_fr))
+
+                acc.mof_classes()
+                acc.iou_classes()
 
             self.return_stat = accuracy.stat()
 

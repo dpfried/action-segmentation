@@ -218,10 +218,18 @@ class Accuracy(object):
         else:
             self._create_correspondences(method='identity')
 
+        num_gt_labels = len(np.unique(self._gt_labels_subset))
+        num_pr_labels = len(np.unique(self._predicted_labels))
+
+        assert num_pr_labels <= num_gt_labels, "gt_labels: {}, pred_labels: {}".format(
+            np.unique(self._gt_labels_subset),
+            np.unique(self._predicted_labels),
+        )
+
         if self._verbose:
             self._logger.debug('# gt_labels: %d   # pr_labels: %d' %
-                               (len(np.unique(self._gt_labels_subset)),
-                                len(np.unique(self._predicted_labels))))
+                               (num_gt_labels,
+                                num_pr_labels))
             self._logger.debug('Correspondences: segmentation to gt : '
                                + str([('%d: %d' % (value[0], key)) for (key, value) in
                                       sorted(self._gt2cluster.items(), key=lambda x: x[-1])]))

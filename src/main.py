@@ -38,6 +38,8 @@ def add_data_args(parser):
     group.add_argument('--pca_no_background', action='store_true')
     group.add_argument('--crosstask_feature_groups', choices=['i3d', 'resnet', 'audio'], default=['i3d', 'resnet'])
 
+    group.add_argument('--compare_to_prediction_folder', help='root folder containing *_pred.npy and *_true.npy prediction files (for comparison)')
+
 
 def add_classifier_args(parser):
     group = parser.add_argument_group('classifier')
@@ -59,7 +61,8 @@ def test(args, model: Model, test_data: Datasplit, test_data_name: str, verbose=
     stats = test_data.accuracy_corpus(optimal_assignment,
                                       prediction_function,
                                       prefix=test_data_name,
-                                      verbose=verbose)
+                                      verbose=verbose,
+                                      compare_to_folder=args.compare_to_prediction_folder)
     return stats
 
 
@@ -122,9 +125,11 @@ def make_data_splits(args):
 
     if args.dataset == 'crosstask':
         pass
+        features_contain_background = True
         if args.features == 'pca':
             max_components = 200
             assert args.pca_components_per_group <= max_components
+            features_contain_background = not args.pca_no_background
             feature_root = 'data/crosstask/crosstask_processed/crosstask_primary_pca-{}_{}-bkg_by-task'.format(
                 max_components,
                 "no" if args.pca_no_background else "with",
@@ -141,6 +146,7 @@ def make_data_splits(args):
                 release_root="data/crosstask/crosstask_release",
                 feature_root=feature_root,
                 dimensions_per_feature_group=dimensions_per_feature_group,
+                features_contain_background=features_contain_background,
             )
             corpus._cache_features = True
 

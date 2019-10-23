@@ -14,12 +14,12 @@ from utils.utils import all_equal
 BIG_NEG = -1e9
 
 
-def get_diagonal_precisions_cholesky(data):
+def get_diagonal_covariances(data):
     # data: num_points x feat_dim
     model = GaussianMixture(n_components=1, covariance_type='diag')
     responsibilities = np.ones((data.shape[0], 1))
     model._initialize(data, responsibilities)
-    return model.precisions_cholesky_
+    return model.covariances_, model.precisions_cholesky_
 
 
 def semimarkov_sufficient_stats(feature_list, label_list, covariance_type, n_classes, max_k=None):
@@ -65,7 +65,9 @@ def semimarkov_sufficient_stats(feature_list, label_list, covariance_type, n_cla
     r_arr = np.vstack(r_l)
     emissions._initialize(X_arr, r_arr)
     if tied_diag:
-        emissions.precisions_cholesky_[:] = np.copy(get_diagonal_precisions_cholesky(X_arr))
+        cov, prec_chol = get_diagonal_covariances(X_arr)
+        emissions.covariances_[:] = np.copy(cov)
+        emissions.precisions_cholesky_[:] = np.copy(prec_chol)
     return emissions, {
         'span_counts': span_counts,
         'span_lengths': span_lengths,
@@ -126,17 +128,17 @@ class SemiMarkovModule(nn.Module):
         )
         init_probs = (stats['span_start_counts'] + state_smoothing) / float(
             stats['instance_count'] + state_smoothing * self.n_classes)
-        #init_probs[np.isnan(init_probs)] = 0
-        assert np.allclose(init_probs.sum(), 1.0), init_probs
+        init_probs[np.isnan(init_probs)] = 0
+        # assert np.allclose(init_probs.sum(), 1.0), init_probs
         self.init_logits.data.zero_()
         self.init_logits.data.add_(torch.from_numpy(init_probs).log())
 
         smoothed_trans_counts = stats['span_transition_counts'] + state_smoothing
 
         trans_probs = smoothed_trans_counts / smoothed_trans_counts.sum(axis=0)[None, :]
-        #trans_probs[np.isnan(trans_probs)] = 0
+        trans_probs[np.isnan(trans_probs)] = 0
         # to, from -- so rows should sum to 1
-        assert np.allclose(trans_probs.sum(axis=0), 1.0, rtol=1e-3), (trans_probs.sum(axis=0), trans_probs)
+        # assert np.allclose(trans_probs.sum(axis=0), 1.0, rtol=1e-3), (trans_probs.sum(axis=0), trans_probs)
         self.transition_logits.data.zero_()
         self.transition_logits.data.add_(torch.from_numpy(trans_probs).log())
 
@@ -328,6 +330,7 @@ class SemiMarkovModule(nn.Module):
 
             emission_augmented = torch.full((b, N, C), BIG_NEG, device=emission_scores.device)
             for i, length in enumerate(lengths):
+                assert emission_augmented[i, :length, :C_1].size() == emission_scores[i, :length].size()
                 emission_augmented[i, :length, :C_1] = emission_scores[i, :length]
                 emission_augmented[i, length, C_1] = 0
             # emission_augmented[:, :N_1, :C_1] = emission_scores
@@ -605,4 +608,5 @@ class SemiMarkovModel(Model):
             # assert len(pred_labels_trim_s) == 1, "batch size should be 1"
             for video, pred_labels_trim in zip(videos, pred_labels_trim_s):
                 predictions[video] = pred_labels_trim.numpy()
+                assert self.model.n_classes not in predictions[video], "predictions should not contain EOS: {}".format(predictions[video])
         return predictions
