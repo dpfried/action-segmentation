@@ -330,6 +330,24 @@ class Datasplit(Dataset):
             if compare_to_folder is not None:
                 task_mapping = {}
 
+            def load_predictions(video_name):
+                if os.path.exists(os.path.join(compare_to_folder, "{}_y_true.npy".format(video_name))):
+                    y_true = np.load(os.path.join(compare_to_folder, "{}_y_true.npy".format(video_name)))
+                    y_pred = np.load(os.path.join(compare_to_folder, "{}_y_pred.npy".format(video_name)))
+                    return {
+                        'y_true': y_true,
+                        'y_pred': y_pred,
+                    }
+                else:
+                    import json
+                    with open(os.path.join(compare_to_folder, "{}.json".format(video_name))) as f:
+                        pred_data = json.load(f)
+                        return {
+                            key: np.array(val)
+                            for key, val in pred_data.items()
+                        }
+
+
             for video_name, video in self._videos_by_task[task].items():
                 # long_gt += list(video._gt_with_0)
                 # long_gt_onhe0 += list(video._gt)
@@ -337,9 +355,10 @@ class Datasplit(Dataset):
                 long_pr += list(prediction_function(video))
 
                 if compare_to_folder is not None:
-                    y_true = np.load(os.path.join(compare_to_folder, "{}_y_true.npy".format(video_name)))
-                    y_pred = np.load(os.path.join(compare_to_folder, "{}_y_pred.npy".format(video_name)))
                     # break ties with background, or earlier steps
+                    pred_data = load_predictions(video_name)
+                    y_true = pred_data['y_true']
+                    y_pred = pred_data['y_pred']
                     trues = y_true.argmax(axis=1)
                     preds = y_pred.argmax(axis=1)
 
@@ -353,11 +372,17 @@ class Datasplit(Dataset):
 
             if compare_to_folder is not None:
                 for video_name, video in self._videos_by_task[task].items():
-                    y_true = np.load(os.path.join(compare_to_folder, "{}_y_true.npy".format(video_name)))
-                    y_pred = np.load(os.path.join(compare_to_folder, "{}_y_pred.npy".format(video_name)))
+                    pred_data = load_predictions(video_name)
+                    y_true = pred_data['y_true']
+                    y_pred = pred_data['y_pred']
                     # break ties with background, or earlier steps
                     trues = y_true.argmax(axis=1)
                     preds = y_pred.argmax(axis=1)
+                    # y_true_rc = pred_data['y_true_rc']
+                    # y_pred_rc = pred_data['y_pred_rc']
+                    # trues = y_true_rc.argmax(axis=1)
+                    # preds = y_pred_rc.argmax(axis=1)
+
                     compare_long_gt += [[task_mapping[t]] for t in trues]
                     compare_long_pr += [task_mapping[p] for p in preds]
 
@@ -411,6 +436,13 @@ class Datasplit(Dataset):
 
             for video_name, video in self._videos_by_task[task].items():
                 video.segmentation[video.iter] = (prediction_function(video), self._label2gt)
+
+            stats = accuracy.stat()
+            if compare_to_folder is not None:
+                comparison_stats = compare_accuracy.stat()
+                stats['comparison_mof'] = comparison_stats['mof']
+                stats['comparison_mof_bg'] = comparison_stats['mof_bg']
+                stats['comparison_mof_non_bg'] = comparison_stats['mof_non_bg']
 
             stats_by_task[task] = accuracy.stat()
         return stats_by_task

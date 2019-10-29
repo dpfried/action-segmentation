@@ -9,6 +9,7 @@ import numpy as np
 from data.corpus import Corpus, GroundTruth, Video, Datasplit
 from data.features import grouped_pca
 from utils.logger import logger
+from utils.utils import load_pickle
 
 CrosstaskTask = namedtuple("CrosstaskTask", ["index", "title", "url", "n_steps", "steps"])
 
@@ -355,25 +356,41 @@ class CrosstaskGroundTruth(GroundTruth):
 
 
 
-def extract_feature_groups(corpus):
+def extract_feature_groups(corpus, narration_feature_dirs=None):
     group_indices = {
         'i3d': (0, 1024),
         'resnet': (1024, 3072),
         'audio': (3072, 3200),
-
     }
     n_instances = len(corpus)
     grouped = defaultdict(dict)
+    last_task = None
+    task_feats = None
     for idx in range(n_instances):
-        video_name = corpus[idx]['video_name']
-        features = corpus[idx]['features']
+        instance = corpus[idx]
+        video_name = instance['video_name']
+        features = instance['features']
         for group, (start, end) in group_indices.items():
             grouped[group][video_name] = features[:, start:end]
+        if narration_feature_dirs is not None:
+            task = instance['task_name']
+            if last_task != task:
+                task_data = [
+                    load_pickle(os.path.join(dir, 'crosstask_narr_{}.pkl'.format(task)))
+                    for dir in narration_feature_dirs
+                ]
+                task_feats = {
+                    datum['video']: datum['narration']
+                    for data in task_data
+                    for datum in data
+                }
+            grouped['narration'][video_name] = task_feats[video_name]
+            last_task = task
     return grouped
 
 
 def pca_and_serialize_features(release_root, raw_feature_root, output_feature_root, remove_background,
-                               pca_components_per_group=300, by_task=True, task_sets=None):
+                               pca_components_per_group=300, by_task=True, task_sets=None, narration_feature_dirs=None):
     if by_task:
         grouped_datasets = datasets_by_task(release_root, raw_feature_root, remove_background,
                                             split='all', task_sets=task_sets, full=True)
@@ -387,7 +404,7 @@ def pca_and_serialize_features(release_root, raw_feature_root, output_feature_ro
 
     for corpora_group, dataset in grouped_datasets.items():
         logger.debug("saving features for task: {}".format(corpora_group))
-        grouped_features = extract_feature_groups(dataset)
+        grouped_features = extract_feature_groups(dataset, narration_feature_dirs)
         transformed, pca_models = grouped_pca(grouped_features, pca_components_per_group, pca_models_by_group=None)
         for feature_group, vid_dict in transformed.items():
             logger.debug("\tsaving features for feature group: {}".format(feature_group))
@@ -403,6 +420,7 @@ if __name__ == "__main__":
     _raw_feature_root = 'data/crosstask/crosstask_features'
     _components = 200
     _task_sets = ['primary']
+    _narration_dirs = ['data/crosstask/narration', 'data/crosstask/narration_test']
     for _remove_background in [False, True]:
         for _by_task in [False, True]:
             _output_feature_root = 'data/crosstask/crosstask_processed/crosstask_{}_pca-{}_{}_{}'.format(
@@ -413,4 +431,5 @@ if __name__ == "__main__":
             )
 
             pca_and_serialize_features(_release_root, _raw_feature_root, _output_feature_root, _remove_background,
-                                       pca_components_per_group=_components, by_task=_by_task, task_sets=_task_sets)
+                                       pca_components_per_group=_components, by_task=_by_task, task_sets=_task_sets,
+                                       narration_feature_dirs=_narration_dirs)

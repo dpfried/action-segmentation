@@ -1,6 +1,10 @@
+import pickle
+
+
 def all_equal(xs):
     xs = list(xs)
     return all(x == xs[0] for x in xs[1:])
+
 
 def nested_dict_map(nested_dict, value_map):
     """
@@ -17,3 +21,8 @@ def nested_dict_map(nested_dict, value_map):
         }
         for outer_key, inner_dict in nested_dict.items()
     }
+
+
+def load_pickle(fname):
+    with open(fname, 'rb') as f:
+        return pickle.load(f)

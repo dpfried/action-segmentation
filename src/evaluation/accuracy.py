@@ -38,6 +38,7 @@ class Accuracy(object):
         self._frames_true_pr = 0
         self._average_score = 0
         self._processed_number = 0
+        self._classes_precision = {}
         self._classes_MoF = {}
         self._classes_IoU = {}
         # keys - gt, values - pr
@@ -239,6 +240,7 @@ class Accuracy(object):
             self._full_predicted_labels = self._predicted_labels
 
         old_frames_true = 0
+        self._classes_precision = {}
         self._classes_MoF = {}
         self._classes_IoU = {}
         excluded_total = 0
@@ -250,11 +252,13 @@ class Accuracy(object):
             gt_mask = self._gt_labels == gt_label
             # no need the loop since only one label should be here
             # i.e. one-to-one mapping, but i'm lazy
+            predicted = 0
             for cluster in self._gt2cluster[gt_label]:
                 true_defined_frame_n += np.sum(self._full_predicted_labels[gt_mask] == cluster,
                                                dtype=float)
                 pr_mask = self._full_predicted_labels == cluster
                 union += np.sum(gt_mask | pr_mask)
+                predicted += np.sum(pr_mask)
             if old_gt2label is not None:
                 old_true_defined_frame_n = 0.
                 for cluster in old_gt2label[gt_label]:
@@ -264,6 +268,7 @@ class Accuracy(object):
 
             self._classes_MoF[gt_label] = [true_defined_frame_n, np.sum(gt_mask)]
             self._classes_IoU[gt_label] = [true_defined_frame_n, union]
+            self._classes_precision[gt_label] = [true_defined_frame_n, predicted]
 
             if gt_label in self.exclude:
                 excluded_total += np.sum(gt_mask)
@@ -284,12 +289,18 @@ class Accuracy(object):
         non_bkg_classes = 0
         for key, val in self._classes_MoF.items():
             true_frames, all_frames = val
+            tf_2, pred_frames = self._classes_precision[key]
+            assert tf_2 == true_frames
             if self._verbose:
                 log_str = 'mof label %d: %f  %d / %d' % (key, true_frames / all_frames,
                                                         true_frames, all_frames)
                 if self._corpus is not None:
                     log_str += '\t[{}]'.format(self._corpus.index2label[key])
                 logger.debug(log_str)
+                # log_str = 'prec label %d: %f  %d / %d' % (key, tf_2 / pred_frames, tf_2, pred_frames)
+                # if self._corpus is not None:
+                #     log_str += '\t[{}]'.format(self._corpus.index2label[key])
+                # logger.debug(log_str)
             average_class_mof += true_frames / all_frames
             total_true += true_frames
             total += all_frames

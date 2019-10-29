@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from models.model import Model, make_optimizer, make_data_loader
-from sklearn.mixture import GaussianMixture
+from utils.utils import all_equal
 
 from models.semimarkov import semimarkov_sufficient_stats
 
@@ -29,10 +29,13 @@ class FeedForward(nn.Module):
                 layers.append(nn.Linear(args.ff_hidden_dim, args.ff_hidden_dim if l_ix < args.ff_hidden_layers - 1 else output_dim))
         self.layers = nn.Sequential(*layers)
 
-    def forward(self, x, valid_classes=None):
+    def forward(self, x, valid_classes_per_instance=None):
         batch_size = x.size(0)
         logits = self.layers(x)
-        if valid_classes is not None:
+        if valid_classes_per_instance is not None:
+            assert all_equal(set(vc.detach().cpu().numpy()) for vc in
+                             valid_classes_per_instance), "must have same valid_classes for all instances in the batch"
+            valid_classes = valid_classes_per_instance[0]
             mask = torch.full_like(logits, -float("inf"))
             mask[:,valid_classes] = 0
             logits = logits + mask
@@ -69,24 +72,23 @@ class FramewiseDiscriminative(Model):
             losses = []
             # for batch in tqdm.tqdm(loader, ncols=80):
             for batch in loader:
-                for sample in batch:
-                    task = sample['task_name']
-                    video = sample['video_name']
-                    features = sample['features']
-                    gt_single = sample['gt_single']
-                    task_indices = sample['task_indices']
-                    if self.args.cuda:
-                        features = features.cuda()
-                        task_indices = task_indices.cuda()
-                        gt_single = gt_single.cuda()
-                    logits = self.model.forward(features, valid_classes=task_indices)
+                tasks = batch['task_name']
+                videos = batch['video_name']
+                features = batch['features'].squeeze(0)
+                gt_single = batch['gt_single'].squeeze(0)
+                task_indices = batch['task_indices']
+                if self.args.cuda:
+                    features = features.cuda()
+                    task_indices = [indx.cuda() for indx in task_indices]
+                    gt_single = gt_single.cuda()
+                logits = self.model.forward(features, valid_classes_per_instance=task_indices)
 
-                    this_loss = loss(logits, gt_single)
-                    losses.append(this_loss.item())
-                    this_loss.backward()
+                this_loss = loss(logits, gt_single)
+                losses.append(this_loss.item())
+                this_loss.backward()
 
-                    optimizer.step()
-                    self.model.zero_grad()
+                optimizer.step()
+                self.model.zero_grad()
             callback_fn(epoch, {'train_loss': np.mean(losses)})
             # if evaluate_on_data_fn is not None:
             #     train_mof = evaluate_on_data_fn(self, train_data, 'train')
@@ -100,19 +102,20 @@ class FramewiseDiscriminative(Model):
         predictions = {}
         loader = make_data_loader(self.args, test_data, shuffle=False, batch_size=1)
         for batch in loader:
-            for sample in batch:
-                features = sample['features']
-                task_indices = sample['task_indices']
-                if self.args.cuda:
-                    features = features.cuda()
-                    task_indices = task_indices.cuda()
-                video = sample['video_name']
-                logits = self.model.forward(features, valid_classes=task_indices)
-                preds = logits.max(dim=1)[1]
-                # handle the edge case where there's only a single instance, in which case preds.size() <= 1
-                if len(preds.size()) > 1:
-                    preds = preds.squeeze(-1)
-                predictions[video] = preds.detach().cpu().numpy()
+            features = batch['features'].squeeze(0)
+            task_indices = batch['task_indices']
+            if self.args.cuda:
+                features = features.cuda()
+                task_indices = [indx.cuda() for indx in task_indices]
+            videos = batch['video_name']
+            assert all_equal(videos)
+            video = next(iter(videos))
+            logits = self.model.forward(features, valid_classes_per_instance=task_indices)
+            preds = logits.max(dim=1)[1]
+            # handle the edge case where there's only a single instance, in which case preds.size() <= 1
+            if len(preds.size()) > 1:
+                preds = preds.squeeze(-1)
+            predictions[video] = preds.detach().cpu().numpy()
         return predictions
 
 
@@ -134,8 +137,14 @@ class FramewiseGaussianMixture(Model):
         self.model = None
 
     def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
-        assert use_labels
-        gmm, stats = semimarkov_sufficient_stats(train_data, self.args.gm_covariance, self.n_classes)
+        loader = make_data_loader(self.args, train_data, shuffle=False, batch_size=1)
+        feature_list, label_list = [], []
+        for batch in loader:
+            feature_list.append(batch['features'].squeeze(0))
+            label_list.append(batch['gt_single'].squeeze(0))
+        gmm, stats = semimarkov_sufficient_stats(feature_list, label_list,
+                                                 self.args.gm_covariance,
+                                                 self.n_classes, max_k=100)
         self.model = gmm
 
     def predict(self, test_data):

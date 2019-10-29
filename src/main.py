@@ -36,7 +36,7 @@ def add_data_args(parser):
     group.add_argument('--remove_background', action='store_true')
     group.add_argument('--pca_components_per_group', type=int, default=100)
     group.add_argument('--pca_no_background', action='store_true')
-    group.add_argument('--crosstask_feature_groups', choices=['i3d', 'resnet', 'audio'], default=['i3d', 'resnet'])
+    group.add_argument('--crosstask_feature_groups', choices=['i3d', 'resnet', 'audio', 'narration'], nargs='+', default=['i3d', 'resnet'])
 
     group.add_argument('--compare_to_prediction_folder', help='root folder containing *_pred.npy and *_true.npy prediction files (for comparison)')
 
@@ -71,9 +71,11 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
 
     if args.training == 'supervised':
         use_labels = True
+        early_stopping_on_dev = True
     else:
         assert args.training == 'unsupervised'
         use_labels = False
+        early_stopping_on_dev = False
 
     def evaluate_on_data(data, name):
         stats_by_name = test(args, model, data, name, verbose=verbose)
@@ -102,7 +104,7 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
 
     model.fit(train_data, use_labels=use_labels, callback_fn=callback_fn)
 
-    if dev_mof_by_epoch:
+    if early_stopping_on_dev and dev_mof_by_epoch:
         best_dev_epoch, best_dev_mof = max(dev_mof_by_epoch.items(), key=lambda t: t[1])
         logger.debug("best dev mov {:.4f} in epoch {}".format(best_dev_mof, best_dev_epoch))
         best_model = pickle.loads(models_by_epoch[best_dev_epoch])
