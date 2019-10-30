@@ -219,7 +219,7 @@ if __name__ == "__main__":
 
     for split_name, (train_data, train_sub_data, test_data) in make_data_splits(args).items():
         print(split_name)
-        model = train(args, train_data, test_data, split_name, train_sub_data)
+        model = train(args, train_data, test_data, split_name, train_sub_data=train_sub_data)
 
         stats_by_task = test(args, model, test_data, split_name)
         for task, stats in stats_by_task.items():

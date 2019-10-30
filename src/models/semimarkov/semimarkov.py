@@ -30,11 +30,24 @@ class SemiMarkovModel(Model):
         self.feature_dim = feature_dim
         assert self.args.sm_max_span_length is not None
         if args.sm_component_model:
-            self.model = ComponentSemiMarkovModule()
-        self.model = SemiMarkovModule(self.n_classes,
-                                      self.feature_dim,
-                                      max_k=self.args.sm_max_span_length,
-                                      allow_self_transitions=True)
+            n_components = self.n_classes
+            class_to_components = {
+                cls: {cls}
+                for cls in range(self.n_classes)
+            }
+            self.model = ComponentSemiMarkovModule(self.n_classes,
+                                                   n_components=n_components,
+                                                   class_to_components=class_to_components,
+                                                   feature_dim=self.feature_dim,
+                                                   embedding_dim=100,
+                                                   allow_self_transitions=True,
+                                                   max_k=self.args.sm_max_span_length,
+                                                   per_class_bias=True)
+        else:
+            self.model = SemiMarkovModule(self.n_classes,
+                                          self.feature_dim,
+                                          max_k=self.args.sm_max_span_length,
+                                          allow_self_transitions=True)
         if args.cuda:
             self.model.cuda()
 
