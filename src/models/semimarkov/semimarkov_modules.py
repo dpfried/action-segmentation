@@ -604,8 +604,8 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         offsets = offsets[:-1]
 
         # len(valid_classes) x embedding_dim
-        return self.component_embeddings(torch.LongTensor(indices, device=valid_classes.device),
-                                         torch.LongTensor(offsets, device=valid_classes.device))
+        return self.component_embeddings(torch.tensor(indices, device=self.component_embeddings.weight.device, dtype=torch.long),
+                                         torch.tensor(offsets, device=self.component_embeddings.weight.device, dtype=torch.long))
 
     def initial_log_probs(self, valid_classes):
         # len(valid_classes) x embedding_dim
