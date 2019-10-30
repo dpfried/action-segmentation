@@ -6,7 +6,7 @@ from scipy.optimize import linear_sum_assignment
 from torch.utils.data import Dataset, DataLoader
 from torch_struct import SemiMarkov, MaxSemiring
 
-from models.semimarkov import SemiMarkovModule
+from models.semimarkov.semimarkov_modules import SemiMarkovModule
 
 # device = torch.device("cuda")
 device = torch.device("cpu")

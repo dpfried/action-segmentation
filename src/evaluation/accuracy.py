@@ -304,7 +304,7 @@ class Accuracy(object):
             average_class_mof += true_frames / all_frames
             total_true += true_frames
             total += all_frames
-            if key != self._corpus._background_index:
+            if key not in self._corpus._background_indices:
                 non_bkg_classes += 1
                 average_class_mof_non_bkg += true_frames / all_frames
                 total_true_non_bkg += true_frames

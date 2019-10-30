@@ -3,9 +3,10 @@
 import os
 import copy
 
+import random
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 
 from evaluation.accuracy import Accuracy
 from evaluation.f1 import F1Score
@@ -220,6 +221,7 @@ class Video(object):
     #     assert len(self._z) == self.n_frames
     #     return np.asarray(self._z_idx)
 
+
 class Datasplit(Dataset):
     def __init__(self, corpus, remove_background, full=True):
         self._corpus = corpus
@@ -261,6 +263,9 @@ class Datasplit(Dataset):
         #               np.max(self._features),
         #               np.mean(self._features)))
 
+    def batch_sampler(self, batch_size=1, batch_by_task=True, shuffle=False):
+        return BatchSampler(self, batch_size=batch_size, batch_by_task=batch_by_task, shuffle=shuffle)
+
     @property
     def corpus(self):
         return self._corpus
@@ -272,8 +277,8 @@ class Datasplit(Dataset):
     def __len__(self):
         return len(self._tasks_and_video_names)
 
-    def __getitem__(self, index, wrap_torch=True):
-        task_name, video_name = self._tasks_and_video_names[index]
+    def __getitem__(self, task_and_video_name, wrap_torch=True):
+        task_name, video_name = task_and_video_name
         video_obj: Video = self._videos_by_task[task_name][video_name]
 
         # num_timesteps = torch_features.size(0)
@@ -301,9 +306,13 @@ class Datasplit(Dataset):
         }
         return data
 
+    def _get_by_index(self, index, wrap_torch=True):
+        task_name, video_name = self._tasks_and_video_names[index]
+        return self.__getitem__((task_name, video_name), wrap_torch)
+
     @property
     def feature_dim(self):
-        return self[0]['features'].size(1)
+        return self._get_by_index(0)['features'].size(1)
 
     def _load_ground_truth_and_videos(self, remove_background):
         raise NotImplementedError("subclasses should implement _load_ground_truth")
@@ -313,6 +322,8 @@ class Datasplit(Dataset):
         gt labels and output labels"""
         stats_by_task = {}
         for task in self._videos_by_task:
+            if verbose:
+                logger.debug("computing accuracy for task {}".format(task))
             accuracy = Accuracy(verbose=verbose, corpus=self._corpus)
 
             f1_score = F1Score(K=self._K_by_task[task], n_videos=len(self._videos_by_task[task]), verbose=verbose)
@@ -453,9 +464,42 @@ class Datasplit(Dataset):
     #         video.resume()
     #     self._count_subact()
 
+class BatchSampler(Sampler):
+    def __init__(self, datasplit: Datasplit, batch_size: int, batch_by_task: bool, shuffle: bool, seed=1):
+        self.datasplit = datasplit
+        self.batch_size = batch_size
+        self.batch_by_task = batch_by_task
+        self.shuffle = shuffle
+        self.seed = seed
+
+        self.batches = []
+        task_names = list(sorted(self.datasplit._videos_by_task.keys()))
+
+        videos_by_task = {
+            task: list(sorted(videos))
+            for task, videos in self.datasplit._videos_by_task.items()
+        }
+        if self.shuffle:
+            state = random.Random(self.seed)
+            state.shuffle(task_names)
+            for videos in videos_by_task.items():
+                state.shuffle(videos)
+
+        for task in task_names:
+            videos = videos_by_task[task]
+            for i in range(0, len(videos), self.batch_size):
+                self.batches.append([(task, video) for video in videos[i:i+self.batch_size]])
+
+    def __iter__(self):
+        return iter(self.batches)
+
+    def __len__(self):
+        return len(self.batches)
+
+
 class Corpus(object):
 
-    def __init__(self, background_label, cache_features=False):
+    def __init__(self, background_labels, cache_features=False):
         """
         Args:
             K: number of possible subactions in current dataset (TODO: this disappeared)
@@ -466,10 +510,11 @@ class Corpus(object):
 
         self._cache_features= cache_features
 
-        self._background_label = background_label
-        self._background_index = 0
-        self.label2index[self._background_label] = self._background_index
-        self.index2label[self._background_index] = self._background_label
+        self._background_labels = background_labels
+        self._background_indices = list(range(len(background_labels)))
+        for label, index in zip(background_labels, self._background_indices):
+            self.label2index[label] = index
+            self.index2label[index] = label
         self._labels_frozen = False
         self._load_mapping()
         self._labels_frozen = True

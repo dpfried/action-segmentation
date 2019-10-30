@@ -129,7 +129,7 @@ class BreakfastDatasplit(Datasplit):
 
 
 class BreakfastCorpus(Corpus):
-    BACKGROUND_LABEL = "SIL"
+    BACKGROUND_LABELS = ["SIL"]
 
     TASKS = [
         'coffee', 'cereals', 'tea', 'milk', 'juice', 'sandwich', 'scrambledegg', 'friedegg', 'salat', 'pancake'
@@ -147,7 +147,7 @@ class BreakfastCorpus(Corpus):
         self._mapping_file = mapping_file
         self._feature_root = feature_root
         self._label_root = label_root
-        super(BreakfastCorpus, self).__init__(background_label=self.BACKGROUND_LABEL)
+        super(BreakfastCorpus, self).__init__(background_labels=self.BACKGROUND_LABELS)
 
     def _load_mapping(self):
         with open(self._mapping_file, 'r') as f:
@@ -155,10 +155,10 @@ class BreakfastCorpus(Corpus):
                 index, label = line.strip().split()
                 index = int(index)
                 _index = self._index(label)
-                if label == self._background_label:
-                    assert index == self._background_index
-                if index == self._background_index:
-                    assert label == self._background_label
+                if label in self._background_labels:
+                    assert index in self._background_indices
+                if index in self._background_indices:
+                    assert label in self._background_labels
                 assert _index == index
 
     def get_datasplit(self, remove_background, task_filter=None, splits=None, full=True):

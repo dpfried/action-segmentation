@@ -1,14 +1,13 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-import tqdm
 from sklearn.mixture import GaussianMixture
 from torch import nn
 from torch.distributions import MultivariateNormal, Poisson
 from torch_struct import SemiMarkovCRF
 
-from data.corpus import Datasplit
-from models.model import Model, make_optimizer, make_data_loader
+from typing import Dict, Set
+
 from utils.utils import all_equal
 
 BIG_NEG = -1e9
@@ -97,27 +96,29 @@ class SemiMarkovModule(nn.Module):
     def __init__(self, n_classes, n_dims, allow_self_transitions=False, max_k=None):
         super(SemiMarkovModule, self).__init__()
         self.n_classes = n_classes
-        self.n_dims = n_dims
+        self.feature_dim = n_dims
         self.allow_self_transitions = allow_self_transitions
-        poisson_log_rates = torch.zeros(n_classes).float()
+        self.init_params()
+        self.max_k = max_k
+
+    def init_params(self):
+        poisson_log_rates = torch.zeros(self.n_classes).float()
         self.poisson_log_rates = nn.Parameter(poisson_log_rates, requires_grad=True)
 
-        gaussian_means = torch.zeros(n_classes, n_dims).float()
+        gaussian_means = torch.zeros(self.n_classes, self.feature_dim).float()
         self.gaussian_means = nn.Parameter(gaussian_means, requires_grad=True)
 
         # shared, tied, diagonal covariance matrix
-        gaussian_cov = torch.eye(n_dims).float()
+        gaussian_cov = torch.eye(self.feature_dim).float()
         self.gaussian_cov = nn.Parameter(gaussian_cov, requires_grad=False)
 
         # target x source
-        transition_logits = torch.zeros(n_classes, n_classes).float()
+        transition_logits = torch.zeros(self.n_classes, self.n_classes).float()
         self.transition_logits = nn.Parameter(transition_logits, requires_grad=True)
 
-        init_logits = torch.zeros(n_classes).float()
+        init_logits = torch.zeros(self.n_classes).float()
         self.init_logits = nn.Parameter(init_logits, requires_grad=True)
         torch.nn.init.uniform_(self.init_logits, 0, 1)
-
-        self.max_k = max_k
 
     def fit_supervised(self, feature_list, label_list, state_smoothing=1e-2, length_smoothing=1e-1):
         emission_gmm, stats = semimarkov_sufficient_stats(
@@ -147,20 +148,22 @@ class SemiMarkovModule(nn.Module):
         self.poisson_log_rates.data.add_(torch.from_numpy(mean_lengths).to(device=self.poisson_log_rates.device).log())
 
         self.gaussian_means.data.zero_()
-        self.gaussian_means.data.add_(torch.from_numpy(emission_gmm.means_).to(device=self.gaussian_means.device).float())
+        self.gaussian_means.data.add_(
+            torch.from_numpy(emission_gmm.means_).to(device=self.gaussian_means.device).float())
 
         self.gaussian_cov.data.zero_()
-        self.gaussian_cov.data.add_(torch.diag(torch.from_numpy(emission_gmm.covariances_[0]).to(device=self.gaussian_cov.device).float()))
+        self.gaussian_cov.data.add_(
+            torch.diag(torch.from_numpy(emission_gmm.covariances_[0]).to(device=self.gaussian_cov.device).float()))
 
     def initialize_gaussian_from_feature_list(self, features):
         feats = torch.cat(features, dim=0)
         assert feats.dim() == 2
         n_dim = feats.size(1)
-        assert n_dim == self.n_dims
+        assert n_dim == self.feature_dim
         mean = feats.mean(dim=0, keepdim=True)
         # self.gaussian_means.data = mean.expand((self.n_classes, self.n_dims))
         self.gaussian_means.data.zero_()
-        self.gaussian_means.data.add_(mean.expand((self.n_classes, self.n_dims)))
+        self.gaussian_means.data.add_(mean.expand((self.n_classes, self.feature_dim)))
         #
         # TODO: consider using the biased estimator, with torch >= 1.2?
         self.gaussian_cov.data = torch.diag(feats.var(dim=0))
@@ -192,20 +195,18 @@ class SemiMarkovModule(nn.Module):
             masked = transition_logits.masked_fill(
                 torch.eye(n_classes, device=self.transition_logits.device).bool(), BIG_NEG)
         # transition_logits are indexed: to_state, from_state
-        # so each row should be normalized (in log-space)
+        # so each column should be normalized (in log-space)
         return F.log_softmax(masked, dim=0)
 
-    def emission_log_probs(self, features, valid_classes):
+    def _emission_log_probs_with_means(self, features, class_means):
+        num_classes, d_ = class_means.size()
         b, N, d = features.size()
+        assert d == d_, (d, d_)
         feats_reshaped = features.reshape(-1, d)
-        if valid_classes is None:
-            class_indices = range(self.n_classes)
-        else:
-            class_indices = valid_classes
         dists = [
-            MultivariateNormal(loc=self.gaussian_means[class_index],
+            MultivariateNormal(loc=mean,
                                covariance_matrix=self.gaussian_cov)
-            for class_index in class_indices
+            for mean in class_means
         ]
         log_probs = [
             dist.log_prob(feats_reshaped).reshape(b, N, 1)  # b x
@@ -213,18 +214,30 @@ class SemiMarkovModule(nn.Module):
         ]
         return torch.cat(log_probs, dim=2)
 
-    def length_log_probs(self, valid_classes):
+    def emission_log_probs(self, features, valid_classes):
+        if valid_classes is None:
+            class_indices = range(self.n_classes)
+        else:
+            class_indices = valid_classes
+        class_means = self.gaussian_means[class_indices]
+        return self._emission_log_probs_with_means(features, class_means)
+
+    def _length_log_probs_with_rates(self, log_rates):
+        n_classes, = log_rates.size()
         max_length = self.max_k
+        time_steps = torch.arange(max_length, device=log_rates.device).unsqueeze(-1).expand(max_length, n_classes).float()
+        poissons = Poisson(torch.exp(log_rates))
+        return poissons.log_prob(time_steps)
+
+    def length_log_probs(self, valid_classes):
         if valid_classes is None:
             class_indices = list(range(self.n_classes))
             n_classes = self.n_classes
         else:
             class_indices = valid_classes
             n_classes = len(valid_classes)
-        time_steps = torch.arange(max_length, device=self.poisson_log_rates.device).unsqueeze(-1).expand(max_length,
-                                                                                                         n_classes).float()
-        poissons = Poisson(torch.exp(self.poisson_log_rates[class_indices]))
-        return poissons.log_prob(time_steps)
+        log_rates = self.poisson_log_rates[class_indices]
+        return self._length_log_probs_with_rates(log_rates)
 
     @staticmethod
     def labels_to_spans(position_labels, max_k):
@@ -364,7 +377,7 @@ class SemiMarkovModule(nn.Module):
 
         # for n in range(N):
         #     for k in range(K):
-        #         for start in range(max(0, n - k + 1),n+1):
+        #         for start in range(max(0,en e k + 1),n+1):
         #             end = min(start+k,n)
         #             scores[:,start:end,k,:,:] += emission_augmented[:,n,:].view(b,1,1,1,1,C)
         return scores
@@ -381,7 +394,8 @@ class SemiMarkovModule(nn.Module):
         b, N = spans.size()
         indices = torch.arange(b)
         if check_eos:
-            assert (spans[indices, lengths] == self.n_classes).all()
+            if not (spans[indices, lengths] == self.n_classes).all():
+                print("warning: EOS marker not present")
         seqs = []
         for i in range(b):
             seqs.append(spans[i, :lengths[i]])
@@ -484,147 +498,145 @@ class SemiMarkovModule(nn.Module):
             pred_spans_unmap.apply_(lambda x: mapping[x])
         return pred_spans_unmap
 
+class ResidualLayer(nn.Module):
+    def __init__(self, in_dim = 100, out_dim = 100):
+        super(ResidualLayer, self).__init__()
+        self.lin1 = nn.Linear(in_dim, out_dim)
+        self.lin2 = nn.Linear(out_dim, out_dim)
 
-class SemiMarkovModel(Model):
-    @classmethod
-    def add_args(cls, parser):
-        parser.add_argument('--sm_max_span_length', type=int)
-        parser.add_argument('--sm_supervised_state_smoothing', type=float, default=1e-2)
-        parser.add_argument('--sm_supervised_length_smoothing', type=float, default=1e-1)
-        parser.add_argument('--sm_supervised_method',
-                            choices=['closed-form', 'gradient-based', 'closed-then-gradient'],
-                            default='closed-form')
+    def forward(self, x):
+        return F.relu(self.lin2(F.relu(self.lin1(x)))) + x
 
-    @classmethod
-    def from_args(cls, args, train_data):
-        n_classes = train_data.corpus.n_classes
-        feature_dim = train_data.feature_dim
-        return SemiMarkovModel(args, n_classes, feature_dim)
+class ComponentSemiMarkovModule(SemiMarkovModule):
+    def __init__(self,
+                 n_classes: int,
+                 n_components: int,
+                 class_to_components: Dict[int, Set[int]],
+                 feature_dim: int,
+                 embedding_dim: int,
+                 allow_self_transitions=False, max_k=None,
+                 per_class_bias=False):
+        self.n_components = n_components
+        self.embedding_dim = embedding_dim
 
-    def __init__(self, args, n_classes, feature_dim):
-        self.args = args
-        self.n_classes = n_classes
-        self.feature_dim = feature_dim
-        assert self.args.sm_max_span_length is not None
-        self.model = SemiMarkovModule(self.n_classes,
-                                      self.feature_dim,
-                                      max_k=self.args.sm_max_span_length,
-                                      allow_self_transitions=True)
-        if args.cuda:
-            self.model.cuda()
+        self.class_to_components = class_to_components
 
-    def fit_supervised(self, train_data: Datasplit):
-        loader = make_data_loader(self.args, train_data, shuffle=False, batch_size=1)
-        features, labels = [], []
-        for batch in loader:
-            features.append(batch['features'].squeeze(0))
-            labels.append(batch['gt_single'].squeeze(0))
-        self.model.fit_supervised(features, labels, self.args.sm_supervised_state_smoothing,
-                                  self.args.sm_supervised_length_smoothing)
+        self.component_to_classes: Dict[int, Set[int]] = {}
+        for cls, components in self.class_to_components.items():
+            for component in components:
+                assert 0 <= component < n_components
+                if component not in self.component_to_classes:
+                    self.component_to_classes[component] = set()
+                self.component_to_classes[component].add(cls)
+        self.per_class_bias = per_class_bias
+        super(ComponentSemiMarkovModule, self).__init__(n_classes, feature_dim, allow_self_transitions, max_k=max_k)
 
-    def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
-        self.model.train()
-        initialize = True
-        if use_labels and self.args.sm_supervised_method in ['closed-form', 'closed-then-gradient']:
-            self.fit_supervised(train_data)
-            callback_fn(0, {})
-            if self.args.sm_supervised_method == 'closed-then-gradient':
-                initialize = False
-            else:
-                return
-        optimizer = make_optimizer(self.args, self.model.parameters())
-        big_loader = make_data_loader(self.args, train_data, shuffle=True, batch_size=100)
-        samp = next(iter(big_loader))
-        big_features = samp['features']
-        big_lengths = samp['lengths']
-        if self.args.cuda:
-            big_features = big_features.cuda()
-            big_lengths = big_lengths.cuda()
+    def init_params(self):
+        # this initialization follows https://github.com/harvardnlp/compound-pcfg/blob/master/models.py
+        # self.component_embeddings = nn.Parameter(torch.randn(self.n_components, self.embedding_dim))
+        self.component_embeddings = nn.EmbeddingBag(num_embeddings=self.n_components,
+                                                    embedding_dim=self.embedding_dim,
+                                                    mode="mean",
+                                                    sparse=True)
 
-        if initialize:
-            self.model.initialize_gaussian(big_features, big_lengths)
+        # p(class) \propto exp(w \cdot embed(class) + b_class)
+        self.initial_weights = nn.Linear(self.embedding_dim, 1, bias=True)
+        if self.per_class_bias:
+            self.initial_bias = nn.Parameter(torch.zeros(self.n_classes))
+        else:
+            self.initial_bias = None
 
-        loader = make_data_loader(self.args, train_data, shuffle=True, batch_size=self.args.batch_size)
+        # p(class_2 | class_1) \propto exp(f(embed(class_1)) embed(class_2) + b_class_2)
+        self.transition_weights = nn.Linear(self.embedding_dim, self.embedding_dim, bias=True)
+        if self.per_class_bias:
+            self.transition_bias = nn.Parameter(torch.zeros(self.n_classes))
+        else:
+            self.transition_bias = None
 
-        # all_features = [sample['features'] for batch in loader for sample in batch]
-        # if self.args.cuda:
-        #     all_features = [feats.cuda() for feats in all_features]
+        self.emission_mean_mlp = nn.Sequential(
+            ResidualLayer(self.embedding_dim, self.embedding_dim),
+            nn.Linear(self.embedding_dim, self.feature_dim)
+        )
 
-        C = self.n_classes
-        K = self.args.sm_max_span_length
+        self.length_mlp = nn.Sequential(
+            ResidualLayer(self.embedding_dim, self.embedding_dim),
+            nn.Linear(self.embedding_dim, 1)
+        )
+        if self.per_class_bias:
+            self.length_bias = nn.Parameter(torch.zeros(self.n_classes))
+        else:
+            self.length_bias = None
 
-        for epoch in range(self.args.epochs):
-            losses = []
-            for batch in tqdm.tqdm(loader, ncols=80):
-                # if self.args.cuda:
-                #     features = features.cuda()
-                #     task_indices = task_indices.cuda()
-                #     gt_single = gt_single.cuda()
-                tasks = batch['task_name']
-                videos = batch['video_name']
-                features = batch['features']
-                labels = batch['gt_single']
-                task_indices = batch['task_indices']
-                lengths = batch['lengths']
+        # shared, tied, diagonal covariance matrix
+        gaussian_cov = torch.eye(self.feature_dim).float()
+        self.gaussian_cov = nn.Parameter(gaussian_cov, requires_grad=False)
 
-                # assert len( task_indices) == self.n_classes, "remove_background and multi-task fit() not implemented"
 
-                # # add a batch dimension
-                # lengths = torch.LongTensor([features.size(0)]).unsqueeze(0)
-                # features = features.unsqueeze(0)
-                # labels = labels.unsqueeze(0)
-                # task_indices = task_indices.unsqueeze(0)
+    def fit_supervised(self, feature_list, label_list, state_smoothing=1e-2, length_smoothing=1e-1):
+        raise NotImplementedError()
 
-                if self.args.cuda:
-                    features = features.cuda()
-                    lengths = lengths.cuda()
-                    labels = labels.cuda()
+    def initialize_gaussian_from_feature_list(self, features):
+        # TODO: implement this. component means average (?) across classes, with identity transformation matrices?
+        raise NotImplementedError()
 
-                if use_labels:
-                    spans = SemiMarkovModule.labels_to_spans(labels, max_k=K)
-                else:
-                    spans = None
+    def embed_classes(self, valid_classes):
+        if valid_classes is None:
+            valid_classes = torch.arange(self.n_classes, device=self.component_embeddings.weight.device)
+        assert valid_classes.dim() == 1, valid_classes
+        offset = 0
+        offsets = [offset]
+        indices = []
+        for cls in valid_classes:
+            components = self.class_to_components[cls]
+            offsets.append(len(components))
+            for cmp in components:
+                indices.append(cmp)
+        assert offsets[-1] == len(indices)
+        offsets = offsets[:-1]
 
-                this_loss = -self.model.log_likelihood(features,
-                                                       lengths,
-                                                       valid_classes_per_instance=task_indices,
-                                                       spans=spans,
-                                                       add_eos=True)
-                this_loss.backward()
+        # len(valid_classes) x embedding_dim
+        return self.component_embeddings(torch.LongTensor(indices, device=valid_classes.device),
+                                         torch.LongTensor(offsets, device=valid_classes.device))
 
-                losses.append(this_loss.item())
-                # TODO: grad clipping?
-                optimizer.step()
-                self.model.zero_grad()
-            callback_fn(epoch, {'train_loss': np.mean(losses)})
+    def initial_log_probs(self, valid_classes):
+        # len(valid_classes) x embedding_dim
+        class_embeddings = self.embed_classes(valid_classes)
+        # len(valid_clases) x 1
+        x = self.initial_weights(class_embeddings)
+        x = x.squeeze(1)
+        if self.initial_bias is not None:
+            x += self.initial_bias[valid_classes]
+        return torch.log_softmax(x, dim=0)
 
-    def predict(self, test_data):
-        self.model.eval()
-        predictions = {}
-        loader = make_data_loader(self.args, test_data, shuffle=False, batch_size=self.args.batch_size)
-        for batch in loader:
-            features = batch['features']
-            task_indices = batch['task_indices']
-            lengths = batch['lengths']
+    def transition_log_probs(self, valid_classes):
+        # p(class_2 | class_1) \propto exp(f(embed(class_1)) embed(class_2) + b_class_2)
 
-            # add a batch dimension
-            # lengths = torch.LongTensor([features.size(0)]).unsqueeze(0)
-            # features = features.unsqueeze(0)
-            # task_indices = task_indices.unsqueeze(0)
+        # len(valid_classes) x embedding_dim
+        class_embeddings = self.embed_classes(valid_classes)
+        # len(valid_classes) x embedding_dim
+        x = self.transition_weights(class_embeddings)
+        x = torch.einsum("fe,te->tf", [x, class_embeddings])
+        if self.transition_bias is not None:
+            x += self.transition_bias.unsqueeze(1).expand([len(valid_classes), len(valid_classes)])
+        if not self.allow_self_transitions:
+            x = x.masked_fill(
+                torch.eye(self.n_classes, device=x.device).bool(), BIG_NEG)
+        # transition_logits are indexed: to_state, from_state
+        # so each column should be normalized (in log-space)
+        return F.log_softmax(x, dim=0)
 
-            if self.args.cuda:
-                features = features.cuda()
-                task_indices = [ti.cuda() for ti in task_indices]
-                lengths = lengths.cuda()
+    def emission_log_probs(self, features, valid_classes):
+        # len(valid_classes) x embedding_dim
+        class_embeddings = self.embed_classes(valid_classes)
+        # len(valid_classes) x feature_dim
+        class_means = self.emission_mean_mlp(class_embeddings)
+        return self._emission_log_probs_with_means(features, class_means)
 
-            videos = batch['video_name']
-
-            pred_spans = self.model.viterbi(features, lengths, task_indices, add_eos=True)
-            pred_labels = SemiMarkovModule.spans_to_labels(pred_spans)
-            pred_labels_trim_s = self.model.trim(pred_labels, lengths, check_eos=True)
-
-            # assert len(pred_labels_trim_s) == 1, "batch size should be 1"
-            for video, pred_labels_trim in zip(videos, pred_labels_trim_s):
-                predictions[video] = pred_labels_trim.numpy()
-                assert self.model.n_classes not in predictions[video], "predictions should not contain EOS: {}".format(predictions[video])
-        return predictions
+    def length_log_probs(self, valid_classes):
+        # len(valid_classes) x embedding_dim
+        class_embeddings = self.embed_classes(valid_classes)
+        # len(valid_classes)
+        class_log_rates = self.length_mlp(class_embeddings).squeeze(1)
+        if self.length_bias is not None:
+            class_log_rates += self.length_bias[valid_classes]
+        return self._length_log_probs_with_rates(class_log_rates)

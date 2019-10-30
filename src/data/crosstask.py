@@ -185,9 +185,9 @@ class CrosstaskDatasplit(Datasplit):
             task_sets, task_ids, split, corpus._release_root
         )
 
-        logger.debug(
-            "{} tasks found with task_sets {}, task_ids {}, split {}".format(len(self._video_names_by_task), task_sets, task_ids, split))
-        logger.debug("{} videos found with task_sets {}, task_ids {}, split {}".format(len(video_names), task_sets, task_ids, split))
+        # logger.debug(
+        #     "{} tasks found with task_sets {}, task_ids {}, split {}".format(len(self._video_names_by_task), task_sets, task_ids, split))
+        # logger.debug("{} videos found with task_sets {}, task_ids {}, split {}".format(len(video_names), task_sets, task_ids, split))
 
         self._save_frame_counts = (split == 'all' and set(corpus.TASK_SET_PATHS.keys()) == set(task_sets))
 
@@ -269,10 +269,15 @@ class CrosstaskCorpus(Corpus):
                     108098, 109761, 110266, 113764, 114508, 118421, 118779, 118780, 118819, 118831],
     }
 
-    BACKGROUND_LABEL = "BKG"
-
     def __init__(self, release_root, feature_root, dimensions_per_feature_group=None, features_contain_background=True):
         print("feature root: {}".format(feature_root))
+        self.BACKGROUND_LABELS_BY_TASK = {
+            task_id: "BKG_{}".format(task_id)
+            for task_set in self.TASK_SET_PATHS for task_id in self.TASK_IDS_BY_SET[task_set]
+        }
+
+        self.BACKGROUND_LABELS = sorted(self.BACKGROUND_LABELS_BY_TASK.values())
+
         self._release_root = release_root
         self._feature_root = feature_root
         self._dimensions_per_feature_group = dimensions_per_feature_group
@@ -285,7 +290,7 @@ class CrosstaskCorpus(Corpus):
             for task in read_task_info(os.path.join(release_root, CrosstaskCorpus.TASK_SET_PATHS[ts]))
         ]
 
-        super(CrosstaskCorpus, self).__init__(background_label=CrosstaskCorpus.BACKGROUND_LABEL)
+        super(CrosstaskCorpus, self).__init__(background_labels=self.BACKGROUND_LABELS)
 
     def _load_mapping(self):
         # background_label should already be indexed
@@ -314,7 +319,7 @@ class CrosstaskGroundTruth(GroundTruth):
         glob_path = os.path.join(self._corpus._release_root, "annotations", "*.csv")
         filenames = glob.glob(glob_path)
         assert filenames, "no filenames found for glob path {}".format(glob_path)
-        logger.debug("{} annotation files found".format(len(filenames)))
+        # logger.debug("{} annotation files found".format(len(filenames)))
         for filename in filenames:
             file = os.path.split(filename)[1]
             file_no_ext = os.path.splitext(file)[0]
@@ -332,7 +337,7 @@ class CrosstaskGroundTruth(GroundTruth):
                 new_gt_t = []
                 for ix in gt_t:
                     if ix == 0:
-                        label_idx = self._corpus._background_index
+                        label_idx = self._corpus.label2index[self._corpus.BACKGROUND_LABELS_BY_TASK[task]]
                     else:
                         label_idx = self._corpus._index(self._tasks_by_id[task].steps[ix - 1])
                     new_gt_t.append(label_idx)

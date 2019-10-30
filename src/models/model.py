@@ -38,16 +38,17 @@ def padding_colate(data_samples):
     return data
 
 
-def make_data_loader(args, corpus, shuffle, batch_size=1):
+def make_data_loader(args, datasplit: Datasplit, shuffle, batch_by_task, batch_size=1):
     # assert batch_size == 1, "other sizes not implemented"
     return DataLoader(
-        corpus,
-        batch_size=batch_size,
-        num_workers=args.num_workers,
-        shuffle=shuffle,
-        drop_last=False,
+        datasplit,
+        # batch_size=batch_size,
+        num_workers=args.workers,
+        # shuffle=shuffle,
+        # drop_last=False,
         # collate_fn=lambda batch: batch,
         collate_fn=padding_colate,
+        batch_sampler=datasplit.batch_sampler(batch_size, batch_by_task, shuffle)
     )
 
 

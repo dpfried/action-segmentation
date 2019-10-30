@@ -12,7 +12,7 @@ from data.corpus import Datasplit
 from data.crosstask import CrosstaskCorpus
 from models.framewise import FramewiseGaussianMixture, FramewiseDiscriminative
 from models.model import Model, add_training_args
-from models.semimarkov import SemiMarkovModel
+from models.semimarkov.semimarkov import SemiMarkovModel
 from utils.logger import logger
 
 CLASSIFIERS = {
@@ -30,13 +30,14 @@ def add_serialization_args(parser):
 def add_data_args(parser):
     group = parser.add_argument_group('data')
     group.add_argument('--dataset', choices=['crosstask', 'breakfast'], default='crosstask')
-    group.add_argument('--num_workers', type=int, default=1)
     group.add_argument('--features', choices=['raw', 'pca'], default='raw')
     group.add_argument('--batch_size', type=int, default=5)
     group.add_argument('--remove_background', action='store_true')
     group.add_argument('--pca_components_per_group', type=int, default=100)
     group.add_argument('--pca_no_background', action='store_true')
     group.add_argument('--crosstask_feature_groups', choices=['i3d', 'resnet', 'audio', 'narration'], nargs='+', default=['i3d', 'resnet'])
+
+    group.add_argument('--mix_tasks', action='store_true', help='train on all tasks simultaneously')
 
     group.add_argument('--compare_to_prediction_folder', help='root folder containing *_pred.npy and *_true.npy prediction files (for comparison)')
 
@@ -143,25 +144,34 @@ def make_data_splits(args):
         else:
             feature_root = 'data/crosstask/crosstask_features'
             dimensions_per_feature_group = None
-        for task_id in CrosstaskCorpus.TASK_IDS_BY_SET['primary']:
-            corpus = CrosstaskCorpus(
-                release_root="data/crosstask/crosstask_release",
-                feature_root=feature_root,
-                dimensions_per_feature_group=dimensions_per_feature_group,
-                features_contain_background=features_contain_background,
-            )
-            corpus._cache_features = True
 
-            splits['{}_val'.format(task_id)] = (
+        corpus = CrosstaskCorpus(
+            release_root="data/crosstask/crosstask_release",
+            feature_root=feature_root,
+            dimensions_per_feature_group=dimensions_per_feature_group,
+            features_contain_background=features_contain_background,
+        )
+        corpus._cache_features = True
+        task_sets = ['primary']
+        task_ids = sorted([task_id for task_set in task_sets for task_id in CrosstaskCorpus.TASK_IDS_BY_SET[task_set]])
+        split_names = ['train', 'val']
+        if args.mix_tasks:
+            splits['all'] = tuple(
                 corpus.get_datasplit(remove_background=args.remove_background,
-                                     task_sets=['primary'],
-                                     task_ids=[task_id],
-                                     split='train'),
-                corpus.get_datasplit(remove_background=args.remove_background,
-                                     task_sets=['primary'],
-                                     task_ids=[task_id],
-                                     split='val'),
+                                     task_sets=task_sets,
+                                     task_ids=task_ids,
+                                     split=split)
+                for split in split_names
             )
+        else:
+            for task_id in task_ids:
+                splits['{}_val'.format(task_id)] = tuple(
+                    corpus.get_datasplit(remove_background=args.remove_background,
+                                         task_sets=task_sets,
+                                         task_ids=[task_id],
+                                         split=split)
+                    for split in split_names
+                )
     elif args.dataset == 'breakfast':
         corpus = BreakfastCorpus('data/breakfast/mapping.txt',
                                  'data/breakfast/reduced_fv_64',

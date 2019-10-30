@@ -5,7 +5,7 @@ import torch.nn as nn
 from models.model import Model, make_optimizer, make_data_loader
 from utils.utils import all_equal
 
-from models.semimarkov import semimarkov_sufficient_stats
+from models.semimarkov.semimarkov_modules import semimarkov_sufficient_stats
 
 from data.corpus import Datasplit
 
@@ -66,7 +66,7 @@ class FramewiseDiscriminative(Model):
         loss = nn.CrossEntropyLoss()
         self.model.train()
         optimizer = make_optimizer(self.args, self.model.parameters())
-        loader = make_data_loader(self.args, train_data, shuffle=True, batch_size=1)
+        loader = make_data_loader(self.args, train_data, batch_by_task=False, shuffle=True, batch_size=1)
 
         for epoch in range(self.args.epochs):
             losses = []
@@ -100,7 +100,7 @@ class FramewiseDiscriminative(Model):
     def predict(self, test_data: Datasplit):
         self.model.eval()
         predictions = {}
-        loader = make_data_loader(self.args, test_data, shuffle=False, batch_size=1)
+        loader = make_data_loader(self.args, test_data, batch_by_task=False, shuffle=False, batch_size=1)
         for batch in loader:
             features = batch['features'].squeeze(0)
             task_indices = batch['task_indices']
@@ -137,7 +137,7 @@ class FramewiseGaussianMixture(Model):
         self.model = None
 
     def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
-        loader = make_data_loader(self.args, train_data, shuffle=False, batch_size=1)
+        loader = make_data_loader(self.args, train_data, batch_by_task=False, shuffle=False, batch_size=1)
         feature_list, label_list = [], []
         for batch in loader:
             feature_list.append(batch['features'].squeeze(0))
