@@ -52,9 +52,9 @@ class SemiMarkovModel(Model):
         initialize = True
         if use_labels and self.args.sm_supervised_method in ['closed-form', 'closed-then-gradient']:
             self.fit_supervised(train_data)
-            callback_fn(0, {})
             if self.args.sm_supervised_method == 'closed-then-gradient':
                 initialize = False
+                callback_fn(-1, {})
             else:
                 return
         optimizer = make_optimizer(self.args, self.model.parameters())

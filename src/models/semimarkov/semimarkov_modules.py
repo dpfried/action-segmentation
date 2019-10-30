@@ -439,7 +439,7 @@ class SemiMarkovModule(nn.Module):
         dist = SemiMarkovCRF(scores, lengths=eos_lengths)
 
         if eos_spans is not None:
-            eos_spans_mapped = eos_spans.detach().cpu()
+            eos_spans_mapped = eos_spans.detach().cpu().clone()
             if valid_classes is not None:
                 # unmap
                 mapping = {cls.item(): index for index, cls in enumerate(valid_classes)}
@@ -447,6 +447,9 @@ class SemiMarkovModule(nn.Module):
                 assert -1 not in mapping
                 mapping[-1] = -1
                 mapping[self.n_classes] = C  # map EOS
+                if 0 not in mapping:
+                    # TODO: hack, 0 sometimes will signify padding
+                    mapping[0] = 0
                 eos_spans_mapped.apply_(lambda x: mapping[x])
             # features = features[:,:this_N,:]
             # spans = spans[:,:this_N]

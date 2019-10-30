@@ -67,7 +67,7 @@ def test(args, model: Model, test_data: Datasplit, test_data_name: str, verbose=
     return stats
 
 
-def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=False):
+def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=False, train_sub_data=None):
     model = CLASSIFIERS[args.classifier].from_args(args, train_data)
 
     if args.training == 'supervised':
@@ -90,7 +90,12 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
     dev_mof_by_epoch = {}
 
     def callback_fn(epoch, stats):
-        train_mof = evaluate_on_data(train_data, 'train')
+        if train_sub_data is not None:
+            train_name = 'train_subset'
+            train_mof = evaluate_on_data(train_sub_data, train_name)
+        else:
+            train_name = 'train'
+            train_mof = evaluate_on_data(train_data, train_name)
         dev_mof = evaluate_on_data(dev_data, 'dev')
         log_str = '{}\tepoch {:2d}'.format(split_name, epoch)
         for stat, value in stats.items():
@@ -98,7 +103,7 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
                 log_str += '\t{} {:.4f}'.format(stat, value)
             else:
                 log_str += '\t{} {}'.format(stat, value)
-        log_str += '\ttrain mof {:.4f}\tdev mof {:.4f}'.format(train_mof, dev_mof)
+        log_str += '\t{} mof {:.4f}\tdev mof {:.4f}'.format(train_name, train_mof, dev_mof)
         logger.debug(log_str)
         models_by_epoch[epoch] = pickle.dumps(model)
         dev_mof_by_epoch[epoch] = dev_mof
@@ -127,7 +132,6 @@ def make_data_splits(args):
     splits = OrderedDict()
 
     if args.dataset == 'crosstask':
-        pass
         features_contain_background = True
         if args.features == 'pca':
             max_components = 200
@@ -154,14 +158,15 @@ def make_data_splits(args):
         corpus._cache_features = True
         task_sets = ['primary']
         task_ids = sorted([task_id for task_set in task_sets for task_id in CrosstaskCorpus.TASK_IDS_BY_SET[task_set]])
-        split_names = ['train', 'val']
+        split_names_and_full = [('train', True), ('train', False), ('val', True)]
         if args.mix_tasks:
             splits['all'] = tuple(
                 corpus.get_datasplit(remove_background=args.remove_background,
                                      task_sets=task_sets,
                                      task_ids=task_ids,
-                                     split=split)
-                for split in split_names
+                                     split=split,
+                                     full=full)
+                for split, full in split_names_and_full
             )
         else:
             for task_id in task_ids:
@@ -169,8 +174,9 @@ def make_data_splits(args):
                     corpus.get_datasplit(remove_background=args.remove_background,
                                          task_sets=task_sets,
                                          task_ids=[task_id],
-                                         split=split)
-                    for split in split_names
+                                         split=split,
+                                         full=full)
+                    for split, full in split_names_and_full
                 )
     elif args.dataset == 'breakfast':
         corpus = BreakfastCorpus('data/breakfast/mapping.txt',
@@ -182,9 +188,14 @@ def make_data_splits(args):
         for heldout_split in all_splits:
             splits[heldout_split] = (
                 corpus.get_datasplit(remove_background=args.remove_background,
-                                     splits=[sp for sp in all_splits if sp != heldout_split]),
+                                     splits=[sp for sp in all_splits if sp != heldout_split],
+                                     full=True),
                 corpus.get_datasplit(remove_background=args.remove_background,
-                                     splits=[heldout_split]),
+                                     splits=[sp for sp in all_splits if sp != heldout_split],
+                                     full=False),
+                corpus.get_datasplit(remove_background=args.remove_background,
+                                     splits=[heldout_split],
+                                     full=True),
             )
     else:
         raise NotImplementedError("invalid dataset {}".format(args.dataset))
@@ -206,9 +217,9 @@ if __name__ == "__main__":
 
     stats_by_split_and_task = {}
 
-    for split_name, (train_data, test_data) in make_data_splits(args).items():
+    for split_name, (train_data, train_sub_data, test_data) in make_data_splits(args).items():
         print(split_name)
-        model = train(args, train_data, test_data, split_name)
+        model = train(args, train_data, test_data, split_name, train_sub_data)
 
         stats_by_task = test(args, model, test_data, split_name)
         for task, stats in stats_by_task.items():

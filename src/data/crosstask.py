@@ -148,8 +148,7 @@ def datasets_by_task(release_root, feature_root, remove_background, task_sets=No
 
 class CrosstaskDatasplit(Datasplit):
     def __init__(self, corpus, remove_background, task_sets=None, split='train', task_ids=None, full=True):
-        if not full:
-            raise NotImplementedError()
+        self.full = full
         self._tasks_to_load = []
 
         if task_sets is None:
@@ -174,6 +173,12 @@ class CrosstaskDatasplit(Datasplit):
             for task_index, videos in load_videos_by_task(corpus._release_root, split=split).items()
             if task_index in task_indices_to_load
         }
+
+        if not self.full:
+            self._video_names_by_task = {
+                task_index: videos[:10]
+                for task_index, videos in self._video_names_by_task.items()
+            }
 
         assert len(
             self._video_names_by_task) != 0, "no tasks found with task_sets {}, task_ids {}, split {}, and release_directory {}".format(
@@ -269,14 +274,9 @@ class CrosstaskCorpus(Corpus):
                     108098, 109761, 110266, 113764, 114508, 118421, 118779, 118780, 118819, 118831],
     }
 
-    def __init__(self, release_root, feature_root, dimensions_per_feature_group=None, features_contain_background=True):
+    def __init__(self, release_root, feature_root, dimensions_per_feature_group=None,
+                 features_contain_background=True, per_task_step=True):
         print("feature root: {}".format(feature_root))
-        self.BACKGROUND_LABELS_BY_TASK = {
-            task_id: "BKG_{}".format(task_id)
-            for task_set in self.TASK_SET_PATHS for task_id in self.TASK_IDS_BY_SET[task_set]
-        }
-
-        self.BACKGROUND_LABELS = sorted(self.BACKGROUND_LABELS_BY_TASK.values())
 
         self._release_root = release_root
         self._feature_root = feature_root
@@ -290,13 +290,28 @@ class CrosstaskCorpus(Corpus):
             for task in read_task_info(os.path.join(release_root, CrosstaskCorpus.TASK_SET_PATHS[ts]))
         ]
 
+        self.BACKGROUND_LABELS_BY_TASK = {
+            task.index: "{}:BKG".format(task.index)
+            for task in self._all_tasks
+        }
+
+        self.BACKGROUND_LABELS = sorted(self.BACKGROUND_LABELS_BY_TASK.values())
+
+        self.per_task_step = per_task_step
+
         super(CrosstaskCorpus, self).__init__(background_labels=self.BACKGROUND_LABELS)
 
+    def get_label(self, task, step):
+        if self.per_task_step:
+            return "{}:{}".format(task, step)
+        else:
+            return step
+
     def _load_mapping(self):
-        # background_label should already be indexed
+        # background_labels should already be indexed
         for task in self._all_tasks:
             for step in task.steps:
-                self._index(step)
+                self._index(self.get_label(task.index, step))
 
     def get_datasplit(self, remove_background, task_sets=None, split='train', task_ids=None, full=True):
         return CrosstaskDatasplit(self, remove_background, task_sets=task_sets, split=split, task_ids=task_ids,
@@ -339,7 +354,7 @@ class CrosstaskGroundTruth(GroundTruth):
                     if ix == 0:
                         label_idx = self._corpus.label2index[self._corpus.BACKGROUND_LABELS_BY_TASK[task]]
                     else:
-                        label_idx = self._corpus._index(self._tasks_by_id[task].steps[ix - 1])
+                        label_idx = self._corpus._index(self._corpus.get_label(task, self._tasks_by_id[task].steps[ix - 1]))
                     new_gt_t.append(label_idx)
                 global_gt.append(new_gt_t)
             if task not in self.gt_by_task:

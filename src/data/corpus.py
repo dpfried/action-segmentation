@@ -482,7 +482,7 @@ class BatchSampler(Sampler):
         if self.shuffle:
             state = random.Random(self.seed)
             state.shuffle(task_names)
-            for videos in videos_by_task.items():
+            for videos in videos_by_task.values():
                 state.shuffle(videos)
 
         for task in task_names:
