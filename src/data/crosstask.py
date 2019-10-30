@@ -275,7 +275,7 @@ class CrosstaskCorpus(Corpus):
     }
 
     def __init__(self, release_root, feature_root, dimensions_per_feature_group=None,
-                 features_contain_background=True, per_task_step=True):
+                 features_contain_background=True, per_task_step=True, use_secondary=False):
         print("feature root: {}".format(feature_root))
 
         self._release_root = release_root
@@ -283,7 +283,11 @@ class CrosstaskCorpus(Corpus):
         self._dimensions_per_feature_group = dimensions_per_feature_group
         self._features_contain_background = features_contain_background
 
-        all_task_sets = list(sorted(CrosstaskCorpus.TASK_SET_PATHS.keys()))
+        self.use_secondary = use_secondary
+        if use_secondary:
+            all_task_sets = list(sorted(CrosstaskCorpus.TASK_SET_PATHS.keys()))
+        else:
+            all_task_sets = ['primary']
 
         self._all_tasks = [
             task for ts in all_task_sets
