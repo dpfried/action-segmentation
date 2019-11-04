@@ -188,18 +188,21 @@ class Accuracy(object):
             for label in np.unique(self._gt_labels_subset):
                 self._gt2cluster[label] = [label]
 
+    def _fulfill_segments_nondes(self, boundaries, predicted_labels, n_frames):
+        full_predicted_labels = []
+        for idx, slice in enumerate(range(0, len(predicted_labels), n_frames)):
+            start, end = boundaries[idx]
+            label_counter = Counter(predicted_labels[slice: slice + n_frames])
+            win_label = label_counter.most_common(1)[0][0]
+            full_predicted_labels += [win_label] * (end - start + 1)
+        return np.asarray(full_predicted_labels)
+
     def _fulfill_segments(self):
         """If was used frame sampling then anyway we need to get assignment
         for each frame"""
-        self._full_predicted_labels = []
-        for idx, slice in enumerate(range(0, len(self._predicted_labels), self._n_frames)):
-            start, end = self._boundaries[idx]
-            label_counter = Counter(self._predicted_labels[slice: slice + self._n_frames])
-            win_label = label_counter.most_common(1)[0][0]
-            self._full_predicted_labels += [win_label] * (end - start + 1)
-        self._full_predicted_labels = np.asarray(self._full_predicted_labels)
+        self._full_predicted_labels = self._fulfill_segments_nondes(self._boundaries, self._predicted_labels, self._n_frames)
 
-    def mof(self, optimal_assignment: bool, with_segments=False, old_gt2label=None, optimization='max'):
+    def mof(self, optimal_assignment: bool, with_segments=False, old_gt2label=None, optimization='max', possible_gt_labels=None):
         """ Compute mean over frames (MoF) for current labeling.
 
         Args:
@@ -219,11 +222,14 @@ class Accuracy(object):
         else:
             self._create_correspondences(method='identity')
 
-        num_gt_labels = len(np.unique(self._gt_labels_subset))
+        if possible_gt_labels is None:
+            possible_gt_labels = np.unique(self._gt_labels_subset)
+
+        num_gt_labels = len(possible_gt_labels)
         num_pr_labels = len(np.unique(self._predicted_labels))
 
         assert num_pr_labels <= num_gt_labels, "gt_labels: {}, pred_labels: {}".format(
-            np.unique(self._gt_labels_subset),
+            possible_gt_labels,
             np.unique(self._predicted_labels),
         )
 

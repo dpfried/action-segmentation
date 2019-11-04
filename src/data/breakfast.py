@@ -2,17 +2,19 @@
 
 import os
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 
 import numpy as np
 
+from data.features import grouped_pca
 from data.corpus import Corpus, GroundTruth, Video, Datasplit
 from utils.logger import logger
 from utils.utils import all_equal
 
 
+
 class BreakfastDatasplit(Datasplit):
-    def __init__(self, corpus, remove_background, task_filter=None, splits=None, full=True):
+    def __init__(self, corpus, remove_background, task_filter=None, splits=None, full=True, subsample=1):
         if splits is None:
             splits = list(sorted(BreakfastCorpus.DATASPLITS.keys()))
         self._splits = splits
@@ -28,7 +30,8 @@ class BreakfastDatasplit(Datasplit):
 
         super(BreakfastDatasplit, self).__init__(corpus,
                                                  remove_background=remove_background,
-                                                 full=full)
+                                                 full=full,
+                                                 subsample=subsample)
 
     def _load_ground_truth_and_videos(self, remove_background):
         self.groundtruth = BreakfastGroundTruth(
@@ -59,6 +62,8 @@ class BreakfastDatasplit(Datasplit):
         for root, dirs, files in os.walk(self._corpus._feature_root):
             if files:
                 for filename in files:
+                    if not filename.endswith(".npy"):
+                        continue
                     matching_tasks = [
                         task for task in self._tasks if task in filename
                     ]
@@ -161,9 +166,19 @@ class BreakfastCorpus(Corpus):
                     assert label in self._background_labels
                 assert _index == index
 
-    def get_datasplit(self, remove_background, task_filter=None, splits=None, full=True):
-        return BreakfastDatasplit(self, remove_background, task_filter=task_filter, splits=splits, full=full)
+    def get_datasplit(self, remove_background, task_filter=None, splits=None, full=True, subsample=1):
+        return BreakfastDatasplit(self, remove_background, task_filter=task_filter, splits=splits,
+                                  full=full, subsample=subsample)
 
+def datasets_by_task(mapping_file, feature_root, label_root, remove_background,
+                     task_ids=None, splits=BreakfastCorpus.DATASPLITS.keys(), full=True):
+    if task_ids is None:
+        task_ids = BreakfastCorpus.TASKS
+    corpus = BreakfastCorpus(mapping_file, feature_root, label_root)
+    return {
+        task_id: corpus.get_datasplit(remove_background, [task_id], splits, full)
+        for task_id in task_ids
+    }
 
 class BreakfastGroundTruth(GroundTruth):
 
@@ -197,7 +212,7 @@ class BreakfastGroundTruth(GroundTruth):
                         start = int(match.group(1))
                         end = int(match.group(2))
                         if end < start:
-                            assert match.group(3) == self._corpus.BACKGROUND_LABEL
+                            assert match.group(3) == self._corpus.BACKGROUND_LABELS[0]
                             continue
                         assert start > len(gt) - 1
                         label = match.group(3)
@@ -283,6 +298,65 @@ class BreakfastGroundTruth(GroundTruth):
 class BreakfastVideo(Video):
 
     def load_features(self):
-        feats = _features = np.loadtxt(os.path.join(self._feature_root, "{}.txt".format(self.name)))
+        # feats = _features = np.loadtxt(os.path.join(self._feature_root, "{}.txt".format(self.name)))
+        feats =  np.load(os.path.join(self._feature_root, "{}.npy".format(self.name)))
         feats = feats[1:, 1:]
         return feats
+
+def extract_feature_groups(corpus):
+    group_indices = {
+        'reduced_64': (0, 64),
+    }
+    n_instances = len(corpus)
+    grouped = defaultdict(dict)
+    for idx in range(n_instances):
+        instance = corpus._get_by_index(idx)
+        video_name = instance['video_name']
+        features = instance['features']
+        for group, (start, end) in group_indices.items():
+            grouped[group][video_name] = features[:, start:end]
+    return grouped
+
+def pca_and_serialize_features(mapping_file, feature_root, label_root, output_feature_root, remove_background,
+                               pca_components_per_group=300, by_task=True, task_ids=None):
+    all_splits = BreakfastCorpus.DATASPLITS.keys()
+    if by_task:
+        grouped_datasets = datasets_by_task(mapping_file, feature_root, label_root, remove_background,
+                                            task_ids=task_ids, splits=all_splits, full=True)
+    else:
+        corpus = BreakfastCorpus(mapping_file, feature_root, label_root)
+        grouped_datasets = {
+            'all': corpus.get_datasplit(remove_background, splits=all_splits)
+        }
+
+    os.makedirs(output_feature_root, exist_ok=True)
+
+    for corpora_group, dataset in grouped_datasets.items():
+        logger.debug("saving features for task: {}".format(corpora_group))
+        grouped_features = extract_feature_groups(dataset)
+        transformed, pca_models = grouped_pca(grouped_features, pca_components_per_group, pca_models_by_group=None)
+        for feature_group, vid_dict in transformed.items():
+            logger.debug("\tsaving features for feature group: {}".format(feature_group))
+            feature_group_dir = os.path.join(output_feature_root, feature_group)
+            os.makedirs(feature_group_dir, exist_ok=True)
+            for vid, features in vid_dict.items():
+                fname = os.path.join(feature_group_dir, '{}.npy'.format(vid))
+                np.save(fname, features)
+
+
+if __name__ == "__main__":
+    _mapping_file = 'data/breakfast/mapping.txt'
+    _feature_root = 'data/breakfast/reduced_fv_64'
+    _label_root = 'data/breakfast/BreakfastII_15fps_qvga_sync'
+
+    _components = 64
+    for _remove_background in [False, True]:
+        for _by_task in [True]:
+            _output_feature_root = 'data/breakfast/breakfast_processed/breakfast_pca-{}_{}_{}'.format(
+                _components,
+                'no-bkg' if _remove_background else 'with-bkg',
+                'by-task' if _by_task else 'all-tasks',
+            )
+
+            pca_and_serialize_features(_mapping_file, _feature_root, _label_root, _output_feature_root, _remove_background,
+                                       pca_components_per_group=_components, by_task=_by_task)

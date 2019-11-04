@@ -10,7 +10,7 @@ import numpy as np
 from data.breakfast import BreakfastCorpus
 from data.corpus import Datasplit
 from data.crosstask import CrosstaskCorpus
-from models.framewise import FramewiseGaussianMixture, FramewiseDiscriminative
+from models.framewise import FramewiseGaussianMixture, FramewiseDiscriminative, FramewiseBaseline
 from models.model import Model, add_training_args
 from models.semimarkov.semimarkov import SemiMarkovModel
 from utils.logger import logger
@@ -18,6 +18,7 @@ from utils.logger import logger
 CLASSIFIERS = {
     'framewise_discriminative': FramewiseDiscriminative,
     'framewise_gaussian_mixture': FramewiseGaussianMixture,
+    'framewise_baseline': FramewiseBaseline,
     'semimarkov': SemiMarkovModel,
 }
 
@@ -40,6 +41,8 @@ def add_data_args(parser):
     group.add_argument('--mix_tasks', action='store_true', help='train on all tasks simultaneously')
 
     group.add_argument('--compare_to_prediction_folder', help='root folder containing *_pred.npy and *_true.npy prediction files (for comparison)')
+
+    group.add_argument('--frame_subsample', type=int, default=1)
 
 
 def add_classifier_args(parser):
@@ -165,7 +168,8 @@ def make_data_splits(args):
                                      task_sets=task_sets,
                                      task_ids=task_ids,
                                      split=split,
-                                     full=full)
+                                     full=full,
+                                     subsample=args.frame_subsample)
                 for split, full in split_names_and_full
             )
         else:
@@ -175,13 +179,25 @@ def make_data_splits(args):
                                          task_sets=task_sets,
                                          task_ids=[task_id],
                                          split=split,
-                                         full=full)
+                                         full=full,
+                                         subsample=args.frame_subsample)
                     for split, full in split_names_and_full
                 )
     elif args.dataset == 'breakfast':
-        corpus = BreakfastCorpus('data/breakfast/mapping.txt',
-                                 'data/breakfast/reduced_fv_64',
-                                 'data/breakfast/BreakfastII_15fps_qvga_sync')
+        if args.features == 'pca':
+            max_components = 64
+            assert args.pca_components_per_group == max_components
+            features_contain_background = not args.pca_no_background
+            assert features_contain_background # not implemented!
+            feature_root = 'data/breakfast/breakfast_processed/breakfast_pca-{}_{}-bkg_by-task'.format(
+                max_components,
+                "no" if args.pca_no_background else "with",
+            )
+        else:
+            feature_root = 'data/breakfast/reduced_fv_64'
+        corpus = BreakfastCorpus(mapping_file='data/breakfast/mapping.txt',
+                                 feature_root=feature_root,
+                                 label_root='data/breakfast/BreakfastII_15fps_qvga_sync')
         corpus._cache_features = True
 
         all_splits = list(sorted(BreakfastCorpus.DATASPLITS.keys()))
@@ -189,13 +205,16 @@ def make_data_splits(args):
             splits[heldout_split] = (
                 corpus.get_datasplit(remove_background=args.remove_background,
                                      splits=[sp for sp in all_splits if sp != heldout_split],
-                                     full=True),
+                                     full=True,
+                                     subsample=args.frame_subsample),
                 corpus.get_datasplit(remove_background=args.remove_background,
                                      splits=[sp for sp in all_splits if sp != heldout_split],
-                                     full=False),
+                                     full=True,
+                                     subsample=args.frame_subsample), # has issue with some tasks being dropped if we pass full=False
                 corpus.get_datasplit(remove_background=args.remove_background,
                                      splits=[heldout_split],
-                                     full=True),
+                                     full=True,
+                                     subsample=args.frame_subsample),
             )
     else:
         raise NotImplementedError("invalid dataset {}".format(args.dataset))

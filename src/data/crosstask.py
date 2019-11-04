@@ -147,7 +147,7 @@ def datasets_by_task(release_root, feature_root, remove_background, task_sets=No
 
 
 class CrosstaskDatasplit(Datasplit):
-    def __init__(self, corpus, remove_background, task_sets=None, split='train', task_ids=None, full=True):
+    def __init__(self, corpus, remove_background, task_sets=None, split='train', task_ids=None, full=True, subsample=1):
         self.full = full
         self._tasks_to_load = []
 
@@ -196,7 +196,7 @@ class CrosstaskDatasplit(Datasplit):
 
         self._save_frame_counts = (split == 'all' and set(corpus.TASK_SET_PATHS.keys()) == set(task_sets))
 
-        super(CrosstaskDatasplit, self).__init__(corpus, remove_background)
+        super(CrosstaskDatasplit, self).__init__(corpus, remove_background, subsample=subsample)
 
     def _load_ground_truth_and_videos(self, remove_background):
         # features_by_task_and_video = {}
@@ -317,9 +317,9 @@ class CrosstaskCorpus(Corpus):
             for step in task.steps:
                 self._index(self.get_label(task.index, step))
 
-    def get_datasplit(self, remove_background, task_sets=None, split='train', task_ids=None, full=True):
+    def get_datasplit(self, remove_background, task_sets=None, split='train', task_ids=None, full=True, subsample=1):
         return CrosstaskDatasplit(self, remove_background, task_sets=task_sets, split=split, task_ids=task_ids,
-                                  full=full)
+                                  full=full, subsample=subsample)
 
 class CrosstaskGroundTruth(GroundTruth):
 

@@ -9,7 +9,7 @@ from utils.utils import all_equal
 def add_training_args(parser):
     parser.add_argument('--epochs', type=int, default=20)
     parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--workers', type=int, default=1)
+    parser.add_argument('--workers', type=int, default=0)
 
 
 def make_optimizer(args, parameters):

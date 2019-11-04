@@ -7,6 +7,8 @@ from utils.utils import all_equal
 
 from models.semimarkov.semimarkov_modules import semimarkov_sufficient_stats
 
+from collections import Counter
+
 from data.corpus import Datasplit
 
 
@@ -41,6 +43,73 @@ class FeedForward(nn.Module):
             logits = logits + mask
         return logits
 
+class FramewiseBaseline(Model):
+    @classmethod
+    def add_args(cls, parser):
+        parser.add_argument("--framewise_baseline_type", choices=['majority_class', 'sample_class_distribution'])
+
+    @classmethod
+    def from_args(cls, args, train_data: Datasplit):
+        return FramewiseBaseline(args, train_data)
+
+    def __init__(self, args, train_data: Datasplit):
+        self.args = args
+        self.n_classes = train_data._corpus.n_classes
+        self.class_histograms_by_task = {}
+
+    def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
+        assert use_labels
+        loader = make_data_loader(self.args, train_data, batch_by_task=False, shuffle=True, batch_size=1)
+
+        for batch in tqdm.tqdm(loader, ncols=80):
+            tasks = batch['task_name']
+            assert len(tasks) == 1
+            task = next(iter(tasks))
+            task_indices = next(iter(batch['task_indices']))
+            gt_single = batch['gt_single'].squeeze(0)
+            assert all(ix in task_indices for ix in set(gt_single))
+            if task not in self.class_histograms_by_task:
+                self.class_histograms_by_task[task] = Counter()
+
+            self.class_histograms_by_task[task].update(gt_single.numpy())
+
+    def predict(self, test_data: Datasplit):
+        predictions = {}
+        loader = make_data_loader(self.args, test_data, batch_by_task=False, shuffle=False, batch_size=1)
+
+        probs_by_task = {}
+        classes_by_task = {}
+        for task, task_distr in self.class_histograms_by_task.items():
+            classes, counts = zip(*task_distr.most_common())
+            classes_by_task[task] = classes
+            probs_by_task[task] = np.array(counts, dtype=np.float) / sum(counts)
+
+        for batch in tqdm.tqdm(loader, ncols=80):
+            features = batch['features'].squeeze(0)
+            num_timesteps = features.size(0)
+
+            tasks = batch['task_name']
+            assert len(tasks) == 1
+            task = next(iter(tasks))
+            task_indices = next(iter(batch['task_indices']))
+            videos = batch['video_name']
+            assert len(videos) == 1
+            video = next(iter(videos))
+
+            task_distr = self.class_histograms_by_task[task]
+
+            if self.args.framewise_baseline_type == 'majority_class':
+                class_pred, _ = task_distr.most_common()[0]
+                preds = np.full(num_timesteps, class_pred, dtype=np.long)
+            else:
+                assert self.args.framewise_baseline_type == 'sample_class_distribution'
+                probs = probs_by_task[task]
+                classes = classes_by_task[task]
+                pred_indices = np.random.multinomial(1, probs, size=num_timesteps).argmax(axis=1)
+                preds = np.array([classes[ix] for ix in pred_indices])
+                assert all(ix in task_indices for ix in set(preds))
+            predictions[video] = preds
+        return predictions
 
 class FramewiseDiscriminative(Model):
     @classmethod
@@ -70,8 +139,8 @@ class FramewiseDiscriminative(Model):
 
         for epoch in range(self.args.epochs):
             losses = []
-            # for batch in tqdm.tqdm(loader, ncols=80):
-            for batch in loader:
+            for batch in tqdm.tqdm(loader, ncols=80):
+            # for batch in loader:
                 tasks = batch['task_name']
                 videos = batch['video_name']
                 features = batch['features'].squeeze(0)
@@ -152,7 +221,7 @@ class FramewiseGaussianMixture(Model):
         predictions = {}
         # for i in tqdm.tqdm(list(range(len(test_data))), ncols=80):
         for i in range(len(test_data)):
-            sample = test_data.__getitem__(i, wrap_torch=False)
+            sample = test_data._get_by_index(i, wrap_torch=False)
             X = sample['features']
             mask_indices = list(set(range(self.n_classes)) - set(sample['task_indices']))
             if mask_indices:
