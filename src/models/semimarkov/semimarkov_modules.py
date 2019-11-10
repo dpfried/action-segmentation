@@ -398,8 +398,9 @@ class SemiMarkovModule(nn.Module):
         b, N = spans.size()
         indices = torch.arange(b)
         if check_eos:
-            if not (spans[indices, lengths] == self.n_classes).all():
-                print("warning: EOS marker not present")
+            pass
+            # if not (spans[indices, lengths] == self.n_classes).all():
+            #     print("warning: EOS marker not present")
         seqs = []
         for i in range(b):
             seqs.append(spans[i, :lengths[i]])
