@@ -1,3 +1,5 @@
+from typing import Dict, Set
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -5,8 +7,6 @@ from sklearn.mixture import GaussianMixture
 from torch import nn
 from torch.distributions import MultivariateNormal, Poisson
 from torch_struct import SemiMarkovCRF
-
-from typing import Dict, Set
 
 from utils.utils import all_equal
 
@@ -228,7 +228,8 @@ class SemiMarkovModule(nn.Module):
     def _length_log_probs_with_rates(self, log_rates):
         n_classes, = log_rates.size()
         max_length = self.max_k
-        time_steps = torch.arange(max_length, device=log_rates.device).unsqueeze(-1).expand(max_length, n_classes).float()
+        time_steps = torch.arange(max_length, device=log_rates.device).unsqueeze(-1).expand(max_length,
+                                                                                            n_classes).float()
         poissons = Poisson(torch.exp(log_rates))
         return poissons.log_prob(time_steps)
 
@@ -504,14 +505,16 @@ class SemiMarkovModule(nn.Module):
             pred_spans_unmap.apply_(lambda x: mapping[x])
         return pred_spans_unmap
 
+
 class ResidualLayer(nn.Module):
-    def __init__(self, in_dim = 100, out_dim = 100):
+    def __init__(self, in_dim=100, out_dim=100):
         super(ResidualLayer, self).__init__()
         self.lin1 = nn.Linear(in_dim, out_dim)
         self.lin2 = nn.Linear(out_dim, out_dim)
 
     def forward(self, x):
         return F.relu(self.lin2(F.relu(self.lin1(x)))) + x
+
 
 class ComponentSemiMarkovModule(SemiMarkovModule):
     def __init__(self,
@@ -578,7 +581,6 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         gaussian_cov = torch.eye(self.feature_dim).float()
         self.gaussian_cov = nn.Parameter(gaussian_cov, requires_grad=False)
 
-
     def fit_supervised(self, feature_list, label_list, state_smoothing=1e-2, length_smoothing=1e-1):
         raise NotImplementedError()
 
@@ -604,8 +606,9 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         offsets = offsets[:-1]
 
         # len(valid_classes) x embedding_dim
-        return self.component_embeddings(torch.tensor(indices, device=self.component_embeddings.weight.device, dtype=torch.long),
-                                         torch.tensor(offsets, device=self.component_embeddings.weight.device, dtype=torch.long))
+        return self.component_embeddings(
+            torch.tensor(indices, device=self.component_embeddings.weight.device, dtype=torch.long),
+            torch.tensor(offsets, device=self.component_embeddings.weight.device, dtype=torch.long))
 
     def initial_log_probs(self, valid_classes):
         # len(valid_classes) x embedding_dim

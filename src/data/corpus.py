@@ -388,9 +388,10 @@ class Datasplit(Dataset):
 
                     assert len(gt) == len(pred), "{} != {}".format(len(gt), len(pred))
 
+                accuracy.add_gt_labels(gt)
+                accuracy.add_predicted_labels(pred)
                 long_gt += gt
                 long_pr += pred
-
 
                 if compare_to_folder is not None:
                     # break ties with background, or earlier steps
@@ -421,17 +422,15 @@ class Datasplit(Dataset):
                     # trues = y_true_rc.argmax(axis=1)
                     # preds = y_pred_rc.argmax(axis=1)
 
-                    compare_long_gt += [[task_mapping[t]] for t in trues]
-                    compare_long_pr += [task_mapping[p] for p in preds]
+                    gt = [[task_mapping[t]] for t in trues]
+                    pred = [task_mapping[p] for p in preds]
 
-            accuracy.gt_labels = long_gt
-            accuracy.predicted_labels = long_pr
+                    compare_accuracy.add_gt_labels(gt)
+                    compare_accuracy.add_predicted_labels(pred)
 
             named_accuracies = [('this_run', accuracy)]
 
             if compare_to_folder is not None:
-                compare_accuracy.gt_labels = compare_long_gt
-                compare_accuracy.predicted_labels = compare_long_pr
                 named_accuracies.append(('comparison', compare_accuracy))
 
             for acc_name, acc in named_accuracies:
@@ -442,7 +441,7 @@ class Datasplit(Dataset):
                 #     # enforce to SIL class assign nothing
                 #     acc.exclude[0] = [-1]
 
-                old_mof, total_fr = acc.mof(optimal_assignment, old_gt2label=self._gt2label, possible_gt_labels=self.corpus.indices_by_task(task))
+                total_fr = acc.mof(optimal_assignment, possible_gt_labels=self.corpus.indices_by_task(task))
                 if acc_name == 'this_run':
                     self._gt2label = acc._gt2cluster
                     self._label2gt = {}
@@ -455,10 +454,12 @@ class Datasplit(Dataset):
                 if verbose:
                     logger.debug('%s Task: %s' % (prefix, task))
                     logger.debug('%s MoF val: ' % prefix + str(acc_cur))
-                    logger.debug('%s previous dic -> MoF val: ' % prefix + str(float(old_mof) / total_fr))
+                    # logger.debug('%s previous dic -> MoF val: ' % prefix + str(float(old_mof) / total_fr))
 
                 acc.mof_classes()
                 acc.iou_classes()
+                acc.levenshtein()
+                acc.single_step_recall()
 
             self.return_stat = accuracy.stat()
 
@@ -534,15 +535,18 @@ class Corpus(object):
         """
         self.label2index = {}
         self.index2label = {}
+        self.component2index = {}
+        self.index2component = {}
+
+        self.label_indices2component_indices = {}
 
         self._cache_features= cache_features
 
-        self._background_labels = background_labels
-        self._background_indices = list(range(len(background_labels)))
-        for label, index in zip(background_labels, self._background_indices):
-            self.label2index[label] = index
-            self.index2label[index] = label
         self._labels_frozen = False
+        self._background_labels = background_labels
+        self._background_indices = []
+        for label in background_labels:
+            self._background_indices.append(self._index(label))
         self._load_mapping()
         self._labels_frozen = True
 
@@ -553,15 +557,38 @@ class Corpus(object):
     def n_classes(self):
         return len(self.label2index)
 
+    @property
+    def n_components(self):
+        return len(self.component2index)
+
     def _index(self, label):
         if label not in self.label2index:
             assert not self._labels_frozen, "trying to index {} after index has been frozen".format(label)
             label_idx = len(self.label2index)
             self.label2index[label] = label_idx
             self.index2label[label_idx] = label
+            assert label not in self.label_indices2component_indices
+            component_indices = []
+            for component_label in self._get_components_for_label(label):
+                component_idx = self._index_component(component_label)
+                component_indices.append(component_idx)
+            self.label_indices2component_indices[label_idx] = list(sorted(component_indices))
         else:
             label_idx = self.label2index[label]
         return label_idx
+
+    def _index_component(self, component_label):
+        if component_label not in self.component2index:
+            assert not self._labels_frozen, "trying to index COMPONENT {} after index has been frozen".format(component_label)
+            component_idx = len(self.component2index)
+            self.component2index[component_label] = component_idx
+            self.index2component[component_idx] = component_label
+        else:
+            component_idx = self.component2index[component_label]
+        return component_idx
+
+    def _get_components_for_label(self, label):
+        raise NotImplementedError()
 
     def indices_by_task(self, task):
         return list(sorted(self._indices_by_task[task]))

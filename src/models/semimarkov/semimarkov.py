@@ -1,3 +1,4 @@
+import copy
 import numpy as np
 import tqdm
 
@@ -17,41 +18,51 @@ class SemiMarkovModel(Model):
                             default='closed-form')
 
         parser.add_argument('--sm_component_model', action='store_true')
+        parser.add_argument('--sm_component_decompose_steps', action='store_true')
+
 
     @classmethod
     def from_args(cls, args, train_data):
         n_classes = train_data.corpus.n_classes
         feature_dim = train_data.feature_dim
-        return SemiMarkovModel(args, n_classes, feature_dim)
 
-    def __init__(self, args, n_classes, feature_dim):
+        assert args.sm_max_span_length is not None
+        if args.sm_component_model:
+            if args.sm_component_decompose_steps:
+                assert not args.task_specific_steps, "can't decompose steps unless steps are across tasks; you should remove --task_specific_steps"
+                n_components = train_data.corpus.n_components
+                class_to_components = copy.copy(train_data.corpus.label_indices2component_indices)
+            else:
+                n_components = n_classes
+                class_to_components = {
+                    cls: {cls}
+                    for cls in range(n_classes)
+                }
+            model = ComponentSemiMarkovModule(n_classes,
+                                              n_components=n_components,
+                                              class_to_components=class_to_components,
+                                              feature_dim=feature_dim,
+                                              embedding_dim=100,
+                                              allow_self_transitions=True,
+                                              max_k=args.sm_max_span_length,
+                                              per_class_bias=True)
+        else:
+            model = SemiMarkovModule(n_classes,
+                                     feature_dim,
+                                     max_k=args.sm_max_span_length,
+                                     allow_self_transitions=True)
+        return SemiMarkovModel(args, n_classes, feature_dim, model)
+
+    def __init__(self, args, n_classes, feature_dim, model):
         self.args = args
         self.n_classes = n_classes
         self.feature_dim = feature_dim
-        assert self.args.sm_max_span_length is not None
-        if args.sm_component_model:
-            n_components = self.n_classes
-            class_to_components = {
-                cls: {cls}
-                for cls in range(self.n_classes)
-            }
-            self.model = ComponentSemiMarkovModule(self.n_classes,
-                                                   n_components=n_components,
-                                                   class_to_components=class_to_components,
-                                                   feature_dim=self.feature_dim,
-                                                   embedding_dim=100,
-                                                   allow_self_transitions=True,
-                                                   max_k=self.args.sm_max_span_length,
-                                                   per_class_bias=True)
-        else:
-            self.model = SemiMarkovModule(self.n_classes,
-                                          self.feature_dim,
-                                          max_k=self.args.sm_max_span_length,
-                                          allow_self_transitions=True)
+        self.model = model
         if args.cuda:
             self.model.cuda()
 
     def fit_supervised(self, train_data: Datasplit):
+        assert not self.args.sm_component_model
         loader = make_data_loader(self.args, train_data, batch_by_task=False, shuffle=False, batch_size=1)
         features, labels = [], []
         for batch in loader:

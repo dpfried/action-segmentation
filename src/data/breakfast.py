@@ -148,11 +148,16 @@ class BreakfastCorpus(Corpus):
     }
     assert all_equal(len(v) for v in DATASPLITS.values())
 
-    def __init__(self, mapping_file, feature_root, label_root):
+    def __init__(self, mapping_file, feature_root, label_root, task_specific_steps=False):
         self._mapping_file = mapping_file
         self._feature_root = feature_root
         self._label_root = label_root
+        self._task_specific_steps = task_specific_steps
+        assert not task_specific_steps
         super(BreakfastCorpus, self).__init__(background_labels=self.BACKGROUND_LABELS)
+
+    def _get_components_for_label(self, label):
+        return label.split('_')
 
     def _load_mapping(self):
         with open(self._mapping_file, 'r') as f:

@@ -1,12 +1,39 @@
 # modified from slim_mallow by Anna Kukleva, https://github.com/Annusha/slim_mallow
 
+import pprint
 from collections import defaultdict, Counter
+import editdistance
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 from utils.logger import logger
 
+
+def singleton_lookup(dictionary, label):
+    assert label in dictionary, "{} not in {}".format(label, dictionary)
+    # this should be a singleton unless 'max' was used for optimization
+    values = dictionary[label]
+    assert len(values) == 1
+    return next(iter(values))
+
+def run_length_encode(labels):
+    rle = []
+    current_label = None
+    count = 0
+    for label in labels:
+        if current_label is None or label != current_label:
+            if current_label is not None:
+                assert count > 0
+                rle.append((current_label, count))
+            count = 0
+            current_label = label
+        count += 1
+    if current_label is not None:
+        assert count > 0
+        rle.append((current_label, count))
+    assert sum(count for sym, count in rle) == len(labels)
+    return rle
 
 class Accuracy(object):
     """ Implementation of evaluation metrics for unsupervised learning.
@@ -27,6 +54,13 @@ class Accuracy(object):
 
         self._corpus = corpus
 
+
+        self._predicted_rle_per_video = [] # : List[List[Tuple[label, length]]], one entry per video
+        self._gt_rle_per_video = [] # : List[List[Tuple[label, length]]], one entry per video
+
+        self._predicted_labels_per_video = []
+        self._gt_labels_per_video = []
+
         self._predicted_labels = None
         self._gt_labels_subset = None
         self._gt_labels = None
@@ -43,6 +77,9 @@ class Accuracy(object):
         self._classes_IoU = {}
         # keys - gt, values - pr
         self.exclude = {}
+
+        self._classes_levenshtein = {}
+        self._classes_step_recall = {}
 
         self._logger = logger
         self._return = {}
@@ -63,85 +100,148 @@ class Accuracy(object):
 
         self.exclude = {}
 
-    @property
-    def predicted_labels(self):
-        return self._predicted_labels
-
-    @predicted_labels.setter
-    def predicted_labels(self, labels):
-        self._predicted_labels = np.array(labels)
-        self._reset()
-
-    @property
-    def gt_labels(self):
-        return self._gt_labels_subset
-
-    @gt_labels.setter
-    def gt_labels(self, labels):
+    def _single_timestep_gt_labels(self, labels):
+        # get a single label per timestep
         # should be nested list
         assert isinstance(labels, list) and isinstance(labels[0], list)
-        labels = [lab_t[0] for lab_t in labels]
+        # can have multiple GT labels per timestep, so we need to take just one per timestep
+        return [lab_t[0] for lab_t in labels]
+
+    def _add_labels(self, labels, is_predicted: bool):
+        if is_predicted:
+            rle = run_length_encode(labels)
+            self._predicted_labels = None
+            self._predicted_labels_per_video.append(labels)
+            self._predicted_rle_per_video.append(rle)
+        else:
+            # ground truth can have multiple labels per timestep; deduplicate
+            labels = self._single_timestep_gt_labels(labels)
+            rle = run_length_encode(labels)
+            self._gt_labels = None
+            self._gt_labels_subset = None
+            self._indices = None
+            self._gt_labels_per_video.append(labels)
+            self._gt_rle_per_video.append(rle)
+
+    def add_gt_labels(self, labels):
+        self._add_labels(labels, is_predicted=False)
+
+    def add_predicted_labels(self, labels):
+        self._add_labels(labels, is_predicted=True)
+
+    # @property
+    # def predicted_labels(self):
+    #     return self._predicted_labels
+    #
+    # @predicted_labels.setter
+    # def predicted_labels(self, labels):
+    #     self._predicted_labels = np.array(labels)
+    #     self._reset()
+    #
+    # @property
+    # def gt_labels(self):
+    #     return self._gt_labels_subset
+    #
+    # @gt_labels.setter
+    # def gt_labels(self, labels):
+    #     # should be nested list
+    #     assert isinstance(labels, list) and isinstance(labels[0], list)
+    #     labels = [lab_t[0] for lab_t in labels]
+    #     self._gt_labels = np.array(labels)
+    #     self._gt_labels_subset = self._gt_labels[:]
+    #     self._indices = list(range(len(self._gt_labels)))
+
+    def _set_gt_labels(self):
+        labels = [x for xs in self._gt_labels_per_video for x in xs]
         self._gt_labels = np.array(labels)
         self._gt_labels_subset = self._gt_labels[:]
         self._indices = list(range(len(self._gt_labels)))
 
-    @property
-    def params(self):
-        """
-        boundaries: if frames samples from segments we need to know boundaries
-            of these segments to fulfill them after
-        indices: frames extracted for whatever and indeed evaluation
-        """
-        return self._boundaries, self._indices
+    def _set_predicted_labels(self):
+        labels = [x for xs in self._predicted_labels_per_video for x in xs]
+        self._predicted_labels = np.array(labels)
 
-    @params.setter
-    def params(self, params):
-        self._boundaries = params[0]
-        self._indices = params[1]
-        self._gt_labels_subset = self._gt_labels[self._indices]
+    @property
+    def gt_labels(self):
+        if self._gt_labels is None:
+            self._set_gt_labels()
+        return self._gt_labels
+
+    @property
+    def gt_labels_subset(self):
+        if self._gt_labels_subset is None:
+            self._set_gt_labels()
+        return self._gt_labels_subset
+
+    @property
+    def indices(self):
+        if self._indices is None:
+            self._set_gt_labels()
+        return self._indices
+
+    @property
+    def predicted_labels(self):
+        if self._predicted_labels is None:
+            self._set_predicted_labels()
+        return self._predicted_labels
+
+    # @property
+    # def params(self):
+    #     """
+    #     boundaries: if frames samples from segments we need to know boundaries
+    #         of these segments to fulfill them after
+    #     indices: frames extracted for whatever and indeed evaluation
+    #     """
+    #     return self._boundaries, self._indices
+    #
+    # @params.setter
+    # def params(self, params):
+    #     self._boundaries = params[0]
+    #     self._indices = params[1]
+    #     self._gt_labels_subset = self._gt_labels[self._indices]
 
     def _create_voting_table(self):
         """Filling table with assignment scores.
 
         Create table which represents paired label assignments, i.e. each
         cell comprises score for corresponding label assignment"""
-        size = max(len(np.unique(self._gt_labels_subset)),
-                   len(np.unique(self._predicted_labels)))
+        size = max(len(np.unique(self.gt_labels_subset)),
+                   len(np.unique(self.predicted_labels)))
         self._voting_table = np.zeros((size, size))
 
-        for idx_gt, gt_label in enumerate(np.unique(self._gt_labels_subset)):
+        for idx_gt, gt_label in enumerate(np.unique(self.gt_labels_subset)):
             self._gt_label2index[gt_label] = idx_gt
             self._gt_index2label[idx_gt] = gt_label
 
         if len(self._gt_label2index) < size:
-            for idx_gt in range(len(np.unique(self._gt_labels_subset)), size):
+            for idx_gt in range(len(np.unique(self.gt_labels_subset)), size):
                 gt_label = idx_gt
                 while gt_label in self._gt_label2index:
                     gt_label += 1
                 self._gt_label2index[gt_label] = idx_gt
                 self._gt_index2label[idx_gt] = gt_label
 
-        for idx_pr, pr_label in enumerate(np.unique(self._predicted_labels)):
+        for idx_pr, pr_label in enumerate(np.unique(self.predicted_labels)):
             self._pr_label2index[pr_label] = idx_pr
             self._pr_index2label[idx_pr] = pr_label
 
         if len(self._pr_label2index) < size:
-            for idx_pr in range(len(np.unique(self._predicted_labels)), size):
+            for idx_pr in range(len(np.unique(self.predicted_labels)), size):
                 pr_label = idx_pr
                 while pr_label in self._pr_label2index:
                     pr_label += 1
                 self._pr_label2index[pr_label] = idx_pr
                 self._pr_index2label[idx_pr] = pr_label
 
-        for idx_gt, gt_label in enumerate(np.unique(self._gt_labels_subset)):
+        for idx_gt, gt_label in enumerate(np.unique(self.gt_labels_subset)):
             if gt_label in list(self.exclude.keys()):
                 continue
-            gt_mask = self._gt_labels_subset == gt_label
-            for idx_pr, pr_label in enumerate(np.unique(self._predicted_labels)):
+            gt_mask = self.gt_labels_subset == gt_label
+            for idx_pr, pr_label in enumerate(np.unique(self.predicted_labels)):
                 if pr_label in list(self.exclude.values()):
                     continue
                 self._voting_table[idx_gt, idx_pr] = \
-                    np.sum(self._predicted_labels[gt_mask] == pr_label, dtype=float)
+                    np.sum(self.predicted_labels[gt_mask] == pr_label, dtype=float)
         for key, val in self.exclude.items():
             # works only if one pair in exclude
             assert len(self.exclude) == 1
@@ -185,7 +285,7 @@ class Accuracy(object):
                 # idx is predicted cluster label
                 self._gt2cluster[self._gt_index2label[c]].append(idx)
         elif method == 'identity':
-            for label in np.unique(self._gt_labels_subset):
+            for label in np.unique(self.gt_labels_subset):
                 self._gt2cluster[label] = [label]
 
     def _fulfill_segments_nondes(self, boundaries, predicted_labels, n_frames):
@@ -200,22 +300,10 @@ class Accuracy(object):
     def _fulfill_segments(self):
         """If was used frame sampling then anyway we need to get assignment
         for each frame"""
-        self._full_predicted_labels = self._fulfill_segments_nondes(self._boundaries, self._predicted_labels, self._n_frames)
+        self._full_predicted_labels = self._fulfill_segments_nondes(self._boundaries, self.predicted_labels, self._n_frames)
 
-    def mof(self, optimal_assignment: bool, with_segments=False, old_gt2label=None, optimization='max', possible_gt_labels=None):
-        """ Compute mean over frames (MoF) for current labeling.
-
-        Args:
-            optimal_assignment: use hungarian to maximize MoF?
-            with_segments: if frame sampling was used
-            old_gt2label: MoF for given gt <-> output labels correspondences
-            optimization: inside hungarian method
-            where: see _create_correspondences method
-
-        Returns:
-
-        """
-        self._n_clusters = len(np.unique(self._predicted_labels))
+    def compute_assignment(self, optimal_assignment: bool, optimization='max', possible_gt_labels=None):
+        self._n_clusters = len(np.unique(self.predicted_labels))
         if optimal_assignment:
             self._create_voting_table()
             self._create_correspondences(method='hungarian', optimization=optimization)
@@ -223,14 +311,14 @@ class Accuracy(object):
             self._create_correspondences(method='identity')
 
         if possible_gt_labels is None:
-            possible_gt_labels = np.unique(self._gt_labels_subset)
+            possible_gt_labels = np.unique(self.gt_labels_subset)
 
         num_gt_labels = len(possible_gt_labels)
-        num_pr_labels = len(np.unique(self._predicted_labels))
+        num_pr_labels = len(np.unique(self.predicted_labels))
 
         assert num_pr_labels <= num_gt_labels, "gt_labels: {}, pred_labels: {}".format(
             possible_gt_labels,
-            np.unique(self._predicted_labels),
+            np.unique(self.predicted_labels),
         )
 
         if self._verbose:
@@ -240,22 +328,107 @@ class Accuracy(object):
             self._logger.debug('Correspondences: segmentation to gt : '
                                + str([('%d: %d' % (value[0], key)) for (key, value) in
                                       sorted(self._gt2cluster.items(), key=lambda x: x[-1])]))
+        return
+
+    def levenshtein(self, gt2cluster=None):
+        if gt2cluster is None:
+            gt2cluster = self._gt2cluster
+        levenshteins = []
+        max_num_segments = []
+
+        assert len(self._predicted_labels_per_video) == len(self._gt_labels_per_video)
+        for gt_rle, pred_rle in zip(self._gt_rle_per_video, self._predicted_rle_per_video):
+            assert sum(length for _, length in gt_rle) == sum(length for _, length in pred_rle)
+            gt_remapped_segments = [singleton_lookup(gt2cluster, label) for (label, length) in gt_rle]
+            pred_segments = [label for (label, length) in pred_rle]
+            levenshteins.append(editdistance.eval(gt_remapped_segments, pred_segments))
+            max_num_segments.append(max(len(gt_remapped_segments), len(pred_segments)))
+
+        levenshteins = np.array(levenshteins)
+        max_num_segments = np.array(max_num_segments)
+
+        assert np.all(max_num_segments > 0)
+
+        results = {
+            'mean_levenshtein': np.array([np.mean(levenshteins), 1.0]),
+            'mean_max_segments': np.array([np.mean(max_num_segments), 1.0]),
+            'total_levenshtein': np.array([np.sum(levenshteins), 1.0]),
+            'num_videos': np.array([len(levenshteins), 1.0]),
+            'mean_normed_levenshtein': np.array([np.mean(levenshteins / max_num_segments), 1.0]),
+        }
+        if self._verbose:
+            logger.debug("Levenshtein stats")
+            for k, v in results.items():
+                logger.debug("{}: {}".format(k, v))
+        self._return.update(results)
+
+    def single_step_recall(self, gt2cluster=None):
+        if gt2cluster is None:
+            gt2cluster = self._gt2cluster
+
+        step_match = 0.0
+        step_total = 0.0
+        non_background_step_match = 0.0
+        non_background_step_total = 0.0
+
+        assert len(self._predicted_labels_per_video) == len(self._gt_labels_per_video)
+        for gt_labels, pred_labels in zip(self._gt_labels_per_video, self._predicted_labels_per_video):
+            pred_labels = np.asarray(pred_labels)
+            background_timesteps = [lab in self._corpus._background_indices for lab in gt_labels]
+            background_remapped_labels = set(singleton_lookup(gt2cluster, label) for label in self._corpus._background_indices if label in gt2cluster)
+            gt_labels_remapped = np.asarray([gt2cluster[gt_label] for gt_label in gt_labels])
+
+            for label in np.unique(gt_labels_remapped):
+                step_total += 1
+                if label not in background_remapped_labels:
+                    non_background_step_total += 1
+                pred_indices = (pred_labels == label).nonzero()[0]
+                if len(pred_indices) == 0:
+                    continue
+                pred_index = np.random.choice(pred_indices)
+                if gt_labels_remapped[pred_index] == label:
+                    step_match += 1
+                    if label not in background_remapped_labels:
+                        non_background_step_match += 1
+        results = ({
+            'single_step_recall': np.array([step_match, step_total]),
+            'step_recall_non_bg': np.array([non_background_step_match, non_background_step_total]),
+        })
+        if self._verbose:
+            logger.debug("Single step recall stats")
+            for k, v in results.items():
+                logger.debug("{}: {}".format(k, v))
+        self._return.update(results)
+
+
+    def mof(self, optimal_assignment: bool, with_segments=False, optimization='max', possible_gt_labels=None):
+        """ Compute mean over frames (MoF) for current labeling.
+
+        Args:
+            optimal_assignment: use hungarian to maximize MoF?
+            with_segments: if frame sampling was used
+            optimization: inside hungarian method
+            where: see _create_correspondences method
+
+        Returns:
+
+        """
+        self.compute_assignment(optimal_assignment, optimization=optimization, possible_gt_labels=possible_gt_labels)
         if with_segments:
             self._fulfill_segments()
         else:
-            self._full_predicted_labels = self._predicted_labels
+            self._full_predicted_labels = self.predicted_labels
 
-        old_frames_true = 0
         self._classes_precision = {}
         self._classes_MoF = {}
         self._classes_IoU = {}
         excluded_total = 0
         if self._verbose:
             logger.debug("exclude: {}".format(self.exclude))
-        for gt_label in np.unique(self._gt_labels):
+        for gt_label in np.unique(self.gt_labels):
             true_defined_frame_n = 0.
             union = 0
-            gt_mask = self._gt_labels == gt_label
+            gt_mask = self.gt_labels == gt_label
             # no need the loop since only one label should be here
             # i.e. one-to-one mapping, but i'm lazy
             predicted = 0
@@ -265,12 +438,6 @@ class Accuracy(object):
                 pr_mask = self._full_predicted_labels == cluster
                 union += np.sum(gt_mask | pr_mask)
                 predicted += np.sum(pr_mask)
-            if old_gt2label is not None:
-                old_true_defined_frame_n = 0.
-                for cluster in old_gt2label[gt_label]:
-                    old_true_defined_frame_n += np.sum(self._full_predicted_labels[gt_mask] == cluster,
-                                                       dtype=float)
-                old_frames_true += old_true_defined_frame_n
 
             self._classes_MoF[gt_label] = [true_defined_frame_n, np.sum(gt_mask)]
             self._classes_IoU[gt_label] = [true_defined_frame_n, union]
@@ -281,8 +448,8 @@ class Accuracy(object):
             else:
                 self._frames_true_pr += true_defined_frame_n
 
-        self._frames_overall = len(self._gt_labels) - excluded_total
-        return old_frames_true, self._frames_overall
+        self._frames_overall = len(self.gt_labels) - excluded_total
+        return self._frames_overall
 
     def mof_classes(self):
         average_class_mof = 0

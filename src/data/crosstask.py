@@ -275,7 +275,7 @@ class CrosstaskCorpus(Corpus):
     }
 
     def __init__(self, release_root, feature_root, dimensions_per_feature_group=None,
-                 features_contain_background=True, per_task_step=True, use_secondary=False):
+                 features_contain_background=True, task_specific_steps=True, use_secondary=False):
         print("feature root: {}".format(feature_root))
 
         self._release_root = release_root
@@ -294,22 +294,30 @@ class CrosstaskCorpus(Corpus):
             for task in read_task_info(os.path.join(release_root, CrosstaskCorpus.TASK_SET_PATHS[ts]))
         ]
 
+        self.task_specific_steps = task_specific_steps
+
         self.BACKGROUND_LABELS_BY_TASK = {
-            task.index: "{}:BKG".format(task.index)
+            task.index: self.get_label(task.index, "BKG")
             for task in self._all_tasks
         }
 
-        self.BACKGROUND_LABELS = sorted(self.BACKGROUND_LABELS_BY_TASK.values())
-
-        self.per_task_step = per_task_step
+        # if not self.task_specific_steps, BACKGROUND_LABELS_BY_TASK will map everything to BKG, so we need to deduplicate
+        self.BACKGROUND_LABELS = list(sorted(set(self.BACKGROUND_LABELS_BY_TASK.values())))
 
         super(CrosstaskCorpus, self).__init__(background_labels=self.BACKGROUND_LABELS)
 
     def get_label(self, task, step):
-        if self.per_task_step:
+        if self.task_specific_steps:
             return "{}:{}".format(task, step)
         else:
             return step
+
+    def _get_components_for_label(self, label):
+        if self.task_specific_steps:
+            step_words = label.split(':')[1]
+        else:
+            step_words = label
+        return step_words.split()
 
     def _load_mapping(self):
         # background_labels should already be indexed

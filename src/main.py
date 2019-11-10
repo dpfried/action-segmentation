@@ -36,13 +36,16 @@ def add_data_args(parser):
     group.add_argument('--remove_background', action='store_true')
     group.add_argument('--pca_components_per_group', type=int, default=100)
     group.add_argument('--pca_no_background', action='store_true')
-    group.add_argument('--crosstask_feature_groups', choices=['i3d', 'resnet', 'audio', 'narration'], nargs='+', default=['i3d', 'resnet'])
+    group.add_argument('--crosstask_feature_groups', choices=['i3d', 'resnet', 'audio', 'narration'], nargs='+', default=['i3d', 'resnet', 'narration'])
 
     group.add_argument('--mix_tasks', action='store_true', help='train on all tasks simultaneously')
 
     group.add_argument('--compare_to_prediction_folder', help='root folder containing *_pred.npy and *_true.npy prediction files (for comparison)')
 
-    group.add_argument('--frame_subsample', type=int, default=1)
+    group.add_argument('--frame_subsample', type=int, default=1, help="interval to subsample frames at (e.g. 10 takes every 10th frame)")
+
+    group.add_argument('--task_specific_steps', action='store_true',
+                       help="Disable step parameter sharing. If passed,  each task in each step has its own parameters. step: steps with the same label have the same parameters across tasks. component: break steps up into components and share parameters across tasks")
 
 
 def add_classifier_args(parser):
@@ -157,6 +160,7 @@ def make_data_splits(args):
             feature_root=feature_root,
             dimensions_per_feature_group=dimensions_per_feature_group,
             features_contain_background=features_contain_background,
+            task_specific_steps=args.task_specific_steps,
         )
         corpus._cache_features = True
         task_sets = ['primary']
@@ -197,7 +201,8 @@ def make_data_splits(args):
             feature_root = 'data/breakfast/reduced_fv_64'
         corpus = BreakfastCorpus(mapping_file='data/breakfast/mapping.txt',
                                  feature_root=feature_root,
-                                 label_root='data/breakfast/BreakfastII_15fps_qvga_sync')
+                                 label_root='data/breakfast/BreakfastII_15fps_qvga_sync',
+                                 task_specific_steps=args.task_specific_steps)
         corpus._cache_features = True
 
         all_splits = list(sorted(BreakfastCorpus.DATASPLITS.keys()))
@@ -223,7 +228,7 @@ def make_data_splits(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(fromfile_prefix_chars='@')
     add_serialization_args(parser)
     add_data_args(parser)
     add_classifier_args(parser)
@@ -236,13 +241,17 @@ if __name__ == "__main__":
 
     stats_by_split_and_task = {}
 
+    stats_by_split_by_task = {}
+
     for split_name, (train_data, train_sub_data, test_data) in make_data_splits(args).items():
         print(split_name)
         model = train(args, train_data, test_data, split_name, train_sub_data=train_sub_data)
 
         stats_by_task = test(args, model, test_data, split_name)
+        stats_by_split_by_task[split_name] = {}
         for task, stats in stats_by_task.items():
             stats_by_split_and_task["{}_{}".format(split_name, task)] = stats
+            stats_by_split_by_task[split_name][task] = stats
         print()
 
 
@@ -263,6 +272,8 @@ if __name__ == "__main__":
     summed_across_tasks = {}
     divided_averaged_across_tasks = {}
 
+    sum_within_split_averaged_across_splits = {}
+
     for key in next(iter(stats_by_split_and_task.values())):
         arrs = np.array([d[key] for d in stats_by_split_and_task.values()])
         summed_across_tasks[key] = np.sum(arrs, axis=0)
@@ -280,3 +291,7 @@ if __name__ == "__main__":
     print()
     print("averaged across tasks:")
     pprint.pprint(divided_averaged_across_tasks)
+    print()
+    print("averaged across splits:")
+    pprint.pprint(sum_within_split_averaged_across_splits)
+
