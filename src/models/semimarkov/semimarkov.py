@@ -10,7 +10,7 @@ from models.semimarkov.semimarkov_modules import SemiMarkovModule, ComponentSemi
 class SemiMarkovModel(Model):
     @classmethod
     def add_args(cls, parser):
-        parser.add_argument('--sm_max_span_length', type=int)
+        parser.add_argument('--sm_max_span_length', type=int, default=20)
         parser.add_argument('--sm_supervised_state_smoothing', type=float, default=1e-2)
         parser.add_argument('--sm_supervised_length_smoothing', type=float, default=1e-1)
         parser.add_argument('--sm_supervised_method',
