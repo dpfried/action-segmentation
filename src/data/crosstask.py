@@ -138,7 +138,7 @@ def datasets_by_task(release_root, feature_root, remove_background, task_sets=No
             task_id for task_set in task_sets
             for task_id in CrosstaskCorpus.TASK_IDS_BY_SET[task_set]
         ]
-    corpus = CrosstaskCorpus(release_root, feature_root)
+    corpus = CrosstaskCorpus(release_root, feature_root, use_secondary='related' in task_sets)
     return {
         task_id: corpus.get_datasplit(remove_background, task_sets=task_sets, split=split, task_ids=[task_id],
                                       full=full)
@@ -147,7 +147,7 @@ def datasets_by_task(release_root, feature_root, remove_background, task_sets=No
 
 
 class CrosstaskDatasplit(Datasplit):
-    def __init__(self, corpus, remove_background, task_sets=None, split='train', task_ids=None, full=True, subsample=1):
+    def __init__(self, corpus, remove_background, task_sets=None, split='train', task_ids=None, full=True, subsample=1, feature_downscale=1.0):
         self.full = full
         self._tasks_to_load = []
 
@@ -196,7 +196,7 @@ class CrosstaskDatasplit(Datasplit):
 
         self._save_frame_counts = (split == 'all' and set(corpus.TASK_SET_PATHS.keys()) == set(task_sets))
 
-        super(CrosstaskDatasplit, self).__init__(corpus, remove_background, subsample=subsample)
+        super(CrosstaskDatasplit, self).__init__(corpus, remove_background, subsample=subsample, feature_downscale=feature_downscale)
 
     def _load_ground_truth_and_videos(self, remove_background):
         # features_by_task_and_video = {}
@@ -308,26 +308,28 @@ class CrosstaskCorpus(Corpus):
 
     def get_label(self, task, step):
         if self.task_specific_steps:
-            return "{}:{}".format(task, step)
+            return "{} {}".format(task, step)
         else:
             return step
 
     def _get_components_for_label(self, label):
-        if self.task_specific_steps:
-            step_words = label.split(':')[1]
-        else:
-            step_words = label
-        return step_words.split()
+        # if self.task_specific_steps:
+        #     step_words = label.split(':')[1]
+        # else:
+        #     step_words = label
+        # return step_words.split()
+        return label.split()
 
     def _load_mapping(self):
-        # background_labels should already be indexed
         for task in self._all_tasks:
-            for step in task.steps:
-                self._index(self.get_label(task.index, step))
+            indices = [self._index(self.BACKGROUND_LABELS_BY_TASK[task.index])]
+            indices += [self._index(self.get_label(task.index, step)) for step in task.steps]
+            self.update_indices_by_task(task.index, indices)
 
-    def get_datasplit(self, remove_background, task_sets=None, split='train', task_ids=None, full=True, subsample=1):
+
+    def get_datasplit(self, remove_background, task_sets=None, split='train', task_ids=None, full=True, subsample=1, feature_downscale=1.0):
         return CrosstaskDatasplit(self, remove_background, task_sets=task_sets, split=split, task_ids=task_ids,
-                                  full=full, subsample=subsample)
+                                  full=full, subsample=subsample, feature_downscale=feature_downscale)
 
 class CrosstaskGroundTruth(GroundTruth):
 
@@ -373,17 +375,19 @@ class CrosstaskGroundTruth(GroundTruth):
                 self.gt_by_task[task] = {}
             self.gt_by_task[task][video] = global_gt
 
-    # def load_mapping(self):
-    #     super(CrosstaskGroundTruth, self).load_mapping()
+    # def _load_mapping(self):
+    #     super(CrosstaskGroundTruth, self)._load_mapping()
     #
     #     # augment indices_by_task with indices for related tasks, if they're present
     #     for task_id, task in self._tasks_by_id.items():
     #         if task_id not in self._indices_by_task:
     #             this_indices = set()
     #             if not self._remove_background:
-    #                 this_indices.add(self._background_index)
+    #                 label_index = self._corpus.label2index[self._corpus.BACKGROUND_LABELS_BY_TASK[task]]
+    #                 this_indices.add(label_index)
     #             for step in task.steps:
-    #                 this_indices.add(self.label2index[step])
+    #                 label_index = self._corpus._index(self._corpus.get_label(task, step))
+    #                 this_indices.add(label_index)
     #             self._indices_by_task[task_id] = list(sorted(this_indices))
 
 
@@ -399,7 +403,7 @@ def extract_feature_groups(corpus, narration_feature_dirs=None):
     last_task = None
     task_feats = None
     for idx in range(n_instances):
-        instance = corpus[idx]
+        instance = corpus._get_by_index(idx)
         video_name = instance['video_name']
         features = instance['features']
         for group, (start, end) in group_indices.items():
@@ -427,7 +431,7 @@ def pca_and_serialize_features(release_root, raw_feature_root, output_feature_ro
         grouped_datasets = datasets_by_task(release_root, raw_feature_root, remove_background,
                                             split='all', task_sets=task_sets, full=True)
     else:
-        corpus = CrosstaskCorpus(release_root, raw_feature_root)
+        corpus = CrosstaskCorpus(release_root, raw_feature_root, use_secondary='related' in task_sets)
         grouped_datasets = {
             'all': corpus.get_datasplit(remove_background, split='all', task_sets=task_sets)
         }
@@ -451,17 +455,34 @@ if __name__ == "__main__":
     _release_root = 'data/crosstask/crosstask_release'
     _raw_feature_root = 'data/crosstask/crosstask_features'
     _components = 200
-    _task_sets = ['primary']
-    _narration_dirs = ['data/crosstask/narration', 'data/crosstask/narration_test']
-    for _remove_background in [False, True]:
-        for _by_task in [False, True]:
-            _output_feature_root = 'data/crosstask/crosstask_processed/crosstask_{}_pca-{}_{}_{}'.format(
-                '+'.join(_task_sets),
+
+    # _narration_dirs = ['data/crosstask/narration', 'data/crosstask/narration_test']
+
+    # _task_sets = ['primary']
+    # for _remove_background in [False, True]:
+    #     for _by_task in [False, True]:
+    #         _output_feature_root = 'data/crosstask/crosstask_processed/crosstask_{}_pca-{}_{}_{}'.format(
+    #             '+'.join(_task_sets),
+    #             _components,
+    #             'no-bkg' if _remove_background else 'with-bkg',
+    #             'by-task' if _by_task else 'all-tasks',
+    #         )
+    #
+    #         pca_and_serialize_features(_release_root, _raw_feature_root, _output_feature_root, _remove_background,
+    #                                    pca_components_per_group=_components, by_task=_by_task, task_sets=_task_sets,
+    #                                    narration_feature_dirs=_narration_dirs)
+
+    _task_sets = ['related']
+    for _remove_background in [False]:
+        for _by_task in [True]:
+            #_output_feature_root = 'data/crosstask/crosstask_processed/crosstask_{}_pca-{}_{}_{}'.format(
+            # put related feats in the same directory as primary so we can load them all simultaneously
+            _output_feature_root = 'data/crosstask/crosstask_processed/crosstask_primary_pca-{}_{}_{}'.format(
+                # '+'.join(_task_sets),
                 _components,
                 'no-bkg' if _remove_background else 'with-bkg',
                 'by-task' if _by_task else 'all-tasks',
             )
 
             pca_and_serialize_features(_release_root, _raw_feature_root, _output_feature_root, _remove_background,
-                                       pca_components_per_group=_components, by_task=_by_task, task_sets=_task_sets,
-                                       narration_feature_dirs=_narration_dirs)
+                                       pca_components_per_group=_components, by_task=_by_task, task_sets=_task_sets)

@@ -10,6 +10,8 @@ from torch_struct import SemiMarkovCRF
 
 from utils.utils import all_equal
 
+from torch.nn.init import xavier_uniform_
+
 BIG_NEG = -1e9
 
 
@@ -525,7 +527,10 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
                  feature_dim: int,
                  embedding_dim: int,
                  allow_self_transitions=False, max_k=None,
-                 per_class_bias=False):
+                 per_class_bias=False,
+                 mean_layers=1,
+                 length_layers=1,
+                 use_separate_embeddings=False):
         self.n_components = n_components
         self.embedding_dim = embedding_dim
 
@@ -539,15 +544,27 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
                     self.component_to_classes[component] = set()
                 self.component_to_classes[component].add(cls)
         self.per_class_bias = per_class_bias
+        self.mean_layers = mean_layers
+        self.length_layers = length_layers
+        self.use_separate_embeddings = use_separate_embeddings
         super(ComponentSemiMarkovModule, self).__init__(n_classes, feature_dim, allow_self_transitions, max_k=max_k)
 
     def init_params(self):
         # this initialization follows https://github.com/harvardnlp/compound-pcfg/blob/master/models.py
         # self.component_embeddings = nn.Parameter(torch.randn(self.n_components, self.embedding_dim))
-        self.component_embeddings = nn.EmbeddingBag(num_embeddings=self.n_components,
-                                                    embedding_dim=self.embedding_dim,
-                                                    mode="mean",
-                                                    sparse=False)
+        def make_embeddings():
+            return nn.EmbeddingBag(num_embeddings=self.n_components,
+                                   embedding_dim=self.embedding_dim,
+                                   mode="mean",
+                                   sparse=False)
+
+        if self.use_separate_embeddings:
+            self.initial_embeddings = make_embeddings()
+            self.transition_embeddings = make_embeddings()
+            self.emission_embeddings = make_embeddings()
+            self.length_embeddings = make_embeddings()
+        else:
+            self.shared_embeddings = make_embeddings()
 
         # p(class) \propto exp(w \cdot embed(class) + b_class)
         self.initial_weights = nn.Linear(self.embedding_dim, 1, bias=True)
@@ -563,16 +580,19 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         else:
             self.transition_bias = None
 
-        self.emission_mean_mlp = nn.Sequential(
-            ResidualLayer(self.embedding_dim, self.embedding_dim),
-            nn.Linear(self.embedding_dim, self.feature_dim)
-        )
+        emission_mean_mlp = [nn.Linear(self.embedding_dim, self.embedding_dim)]
+        for _ in range(self.mean_layers):
+            emission_mean_mlp.append(ResidualLayer(self.embedding_dim, self.embedding_dim))
+        emission_mean_mlp.append(nn.Linear(self.embedding_dim, self.feature_dim))
+        self.emission_mean_mlp = nn.Sequential(*emission_mean_mlp)
         self.emission_mean_bias = nn.Parameter(torch.zeros(self.feature_dim))
 
-        self.length_mlp = nn.Sequential(
-            ResidualLayer(self.embedding_dim, self.embedding_dim),
-            nn.Linear(self.embedding_dim, 1)
-        )
+        length_mlp = [nn.Linear(self.embedding_dim, self.embedding_dim)]
+        for _ in range(self.length_layers):
+            length_mlp.append(ResidualLayer(self.embedding_dim, self.embedding_dim))
+        length_mlp.append(nn.Linear(self.embedding_dim, 1))
+        self.length_mlp = nn.Sequential(*length_mlp)
+
         if self.per_class_bias:
             self.length_bias = nn.Parameter(torch.zeros(self.n_classes))
         else:
@@ -581,6 +601,10 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         # shared, tied, diagonal covariance matrix
         gaussian_cov = torch.eye(self.feature_dim).float()
         self.gaussian_cov = nn.Parameter(gaussian_cov, requires_grad=False)
+
+        for name, param in self.named_parameters():
+            if param.dim() > 1 and name not in ['gaussian_cov']:
+                xavier_uniform_(param)
 
     def fit_supervised(self, feature_list, label_list, state_smoothing=1e-2, length_smoothing=1e-1):
         raise NotImplementedError()
@@ -591,9 +615,9 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         self.emission_mean_bias.data.zero_()
         self.emission_mean_bias.data.add_(mean.squeeze(0))
 
-    def embed_classes(self, valid_classes):
+    def embed_classes(self, component_embeddings, valid_classes):
         if valid_classes is None:
-            valid_classes = torch.arange(self.n_classes, device=self.component_embeddings.weight.device)
+            valid_classes = torch.arange(self.n_classes, device=component_embeddings.weight.device)
         assert valid_classes.dim() == 1, valid_classes
         offset = 0
         offsets = [offset]
@@ -607,13 +631,16 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         offsets = offsets[:-1]
 
         # len(valid_classes) x embedding_dim
-        return self.component_embeddings(
-            torch.tensor(indices, device=self.component_embeddings.weight.device, dtype=torch.long),
-            torch.tensor(offsets, device=self.component_embeddings.weight.device, dtype=torch.long))
+        return component_embeddings(
+            torch.tensor(indices, device=component_embeddings.weight.device, dtype=torch.long),
+            torch.tensor(offsets, device=component_embeddings.weight.device, dtype=torch.long))
 
     def initial_log_probs(self, valid_classes):
         # len(valid_classes) x embedding_dim
-        class_embeddings = self.embed_classes(valid_classes)
+        class_embeddings = self.embed_classes(
+            self.initial_embeddings if self.use_separate_embeddings else self.shared_embeddings,
+            valid_classes
+        )
         # len(valid_clases) x 1
         x = self.initial_weights(class_embeddings)
         x = x.squeeze(1)
@@ -625,7 +652,10 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         # p(class_2 | class_1) \propto exp(f(embed(class_1)) embed(class_2) + b_class_2)
 
         # len(valid_classes) x embedding_dim
-        class_embeddings = self.embed_classes(valid_classes)
+        class_embeddings = self.embed_classes(
+            self.transition_embeddings if self.use_separate_embeddings else self.shared_embeddings,
+            valid_classes
+        )
         # len(valid_classes) x embedding_dim
         x = self.transition_weights(class_embeddings)
         x = torch.einsum("fe,te->tf", [x, class_embeddings])
@@ -640,7 +670,10 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
 
     def emission_log_probs(self, features, valid_classes):
         # len(valid_classes) x embedding_dim
-        class_embeddings = self.embed_classes(valid_classes)
+        class_embeddings = self.embed_classes(
+            self.emission_embeddings if self.use_separate_embeddings else self.shared_embeddings,
+            valid_classes
+        )
         # len(valid_classes) x feature_dim
         class_means = self.emission_mean_mlp(class_embeddings)
         class_means += self.emission_mean_bias.unsqueeze(0).expand_as(class_means)
@@ -648,7 +681,10 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
 
     def length_log_probs(self, valid_classes):
         # len(valid_classes) x embedding_dim
-        class_embeddings = self.embed_classes(valid_classes)
+        class_embeddings = self.embed_classes(
+            self.length_embeddings if self.use_separate_embeddings else self.shared_embeddings,
+            valid_classes
+        )
         # len(valid_classes)
         class_log_rates = self.length_mlp(class_embeddings).squeeze(1)
         if self.length_bias is not None:

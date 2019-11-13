@@ -32,11 +32,14 @@ def add_data_args(parser):
     group = parser.add_argument_group('data')
     group.add_argument('--dataset', choices=['crosstask', 'breakfast'], default='crosstask')
     group.add_argument('--features', choices=['raw', 'pca'], default='raw')
+    group.add_argument('--feature_downscale', type=float, default=1.0)
     group.add_argument('--batch_size', type=int, default=5)
     group.add_argument('--remove_background', action='store_true')
     group.add_argument('--pca_components_per_group', type=int, default=100)
     group.add_argument('--pca_no_background', action='store_true')
     group.add_argument('--crosstask_feature_groups', choices=['i3d', 'resnet', 'audio', 'narration'], nargs='+', default=['i3d', 'resnet', 'narration'])
+
+    group.add_argument('--crosstask_training_data', choices=['primary', 'related'], nargs='+', default=['primary'])
 
     group.add_argument('--mix_tasks', action='store_true', help='train on all tasks simultaneously')
 
@@ -45,7 +48,7 @@ def add_data_args(parser):
     group.add_argument('--frame_subsample', type=int, default=1, help="interval to subsample frames at (e.g. 10 takes every 10th frame)")
 
     group.add_argument('--task_specific_steps', action='store_true',
-                       help="Disable step parameter sharing. If passed,  each task in each step has its own parameters. step: steps with the same label have the same parameters across tasks. component: break steps up into components and share parameters across tasks")
+                       help="")
 
 
 def add_classifier_args(parser):
@@ -94,8 +97,10 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
 
     models_by_epoch = {}
     dev_mof_by_epoch = {}
+    stats_by_epoch = {}
 
     def callback_fn(epoch, stats):
+        stats_by_epoch[epoch] = stats
         if train_sub_data is not None:
             train_name = 'train_subset'
             train_mof = evaluate_on_data(train_sub_data, train_name)
@@ -120,6 +125,10 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
         best_dev_epoch, best_dev_mof = max(dev_mof_by_epoch.items(), key=lambda t: t[1])
         logger.debug("best dev mov {:.4f} in epoch {}".format(best_dev_mof, best_dev_epoch))
         best_model = pickle.loads(models_by_epoch[best_dev_epoch])
+    elif stats_by_epoch and 'train_loss' in next(iter(stats_by_epoch.values())):
+        best_epoch, best_train_stats = min(stats_by_epoch.items(), key=lambda t: t[1]['train_loss'])
+        logger.debug("best train loss {:.4f} in epoch {}".format(best_train_stats['train_loss'], best_epoch))
+        best_model = pickle.loads(models_by_epoch[best_epoch])
     else:
         best_model = model
 
@@ -161,11 +170,14 @@ def make_data_splits(args):
             dimensions_per_feature_group=dimensions_per_feature_group,
             features_contain_background=features_contain_background,
             task_specific_steps=args.task_specific_steps,
+            use_secondary='related' in args.crosstask_training_data,
         )
         corpus._cache_features = True
-        task_sets = ['primary']
-        task_ids = sorted([task_id for task_set in task_sets for task_id in CrosstaskCorpus.TASK_IDS_BY_SET[task_set]])
-        split_names_and_full = [('train', True), ('train', False), ('val', True)]
+        train_task_sets = args.crosstask_training_data
+        test_task_sets = ['primary']
+        task_ids = sorted([task_id for task_set in sorted(set(train_task_sets) | set(test_task_sets))
+                           for task_id in CrosstaskCorpus.TASK_IDS_BY_SET[task_set]])
+        split_names_and_full = [('train', True, train_task_sets), ('train', False, test_task_sets), ('val', True, test_task_sets)]
         if args.mix_tasks:
             splits['all'] = tuple(
                 corpus.get_datasplit(remove_background=args.remove_background,
@@ -173,8 +185,9 @@ def make_data_splits(args):
                                      task_ids=task_ids,
                                      split=split,
                                      full=full,
-                                     subsample=args.frame_subsample)
-                for split, full in split_names_and_full
+                                     subsample=args.frame_subsample,
+                                     feature_downscale=args.feature_downscale)
+                for split, full, task_sets in split_names_and_full
             )
         else:
             for task_id in task_ids:
@@ -184,8 +197,9 @@ def make_data_splits(args):
                                          task_ids=[task_id],
                                          split=split,
                                          full=full,
-                                         subsample=args.frame_subsample)
-                    for split, full in split_names_and_full
+                                         subsample=args.frame_subsample,
+                                         feature_downscale=args.feature_downscale)
+                    for split, full, task_sets in split_names_and_full
                 )
     elif args.dataset == 'breakfast':
         if args.features == 'pca':
@@ -211,15 +225,18 @@ def make_data_splits(args):
                 corpus.get_datasplit(remove_background=args.remove_background,
                                      splits=[sp for sp in all_splits if sp != heldout_split],
                                      full=True,
-                                     subsample=args.frame_subsample),
+                                     subsample=args.frame_subsample,
+                                     feature_downscale=args.feature_downscale),
                 corpus.get_datasplit(remove_background=args.remove_background,
                                      splits=[sp for sp in all_splits if sp != heldout_split],
                                      full=True,
-                                     subsample=args.frame_subsample), # has issue with some tasks being dropped if we pass full=False
+                                     subsample=args.frame_subsample,
+                                     feature_downscale=args.feature_downscale), # has issue with some tasks being dropped if we pass full=False
                 corpus.get_datasplit(remove_background=args.remove_background,
                                      splits=[heldout_split],
                                      full=True,
-                                     subsample=args.frame_subsample),
+                                     subsample=args.frame_subsample,
+                                     feature_downscale=args.feature_downscale),
             )
     else:
         raise NotImplementedError("invalid dataset {}".format(args.dataset))

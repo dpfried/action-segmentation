@@ -19,6 +19,10 @@ class SemiMarkovModel(Model):
 
         parser.add_argument('--sm_component_model', action='store_true')
         parser.add_argument('--sm_component_decompose_steps', action='store_true')
+        parser.add_argument('--sm_component_mean_layers', type=int, default=1)
+        parser.add_argument('--sm_component_length_layers', type=int, default=1)
+        parser.add_argument('--sm_component_embedding_dim', type=int, default=100)
+        parser.add_argument('--sm_component_separate_embeddings', action='store_true')
 
 
     @classmethod
@@ -29,7 +33,7 @@ class SemiMarkovModel(Model):
         assert args.sm_max_span_length is not None
         if args.sm_component_model:
             if args.sm_component_decompose_steps:
-                assert not args.task_specific_steps, "can't decompose steps unless steps are across tasks; you should remove --task_specific_steps"
+                # assert not args.task_specific_steps, "can't decompose steps unless steps are across tasks; you should remove --task_specific_steps"
                 n_components = train_data.corpus.n_components
                 class_to_components = copy.copy(train_data.corpus.label_indices2component_indices)
             else:
@@ -42,10 +46,13 @@ class SemiMarkovModel(Model):
                                               n_components=n_components,
                                               class_to_components=class_to_components,
                                               feature_dim=feature_dim,
-                                              embedding_dim=100,
+                                              embedding_dim=args.sm_component_embedding_dim,
                                               allow_self_transitions=True,
                                               max_k=args.sm_max_span_length,
-                                              per_class_bias=True)
+                                              per_class_bias=True,
+                                              mean_layers=args.sm_component_mean_layers,
+                                              length_layers=args.sm_component_length_layers,
+                                              use_separate_embeddings=args.sm_component_separate_embeddings)
         else:
             model = SemiMarkovModule(n_classes,
                                      feature_dim,
@@ -81,7 +88,7 @@ class SemiMarkovModel(Model):
                 callback_fn(-1, {})
             else:
                 return
-        optimizer = make_optimizer(self.args, self.model.parameters())
+        optimizer, scheduler = make_optimizer(self.args, self.model.parameters())
         big_loader = make_data_loader(self.args, train_data, batch_by_task=False, shuffle=True, batch_size=100)
         samp = next(iter(big_loader))
         big_features = samp['features']
@@ -104,6 +111,7 @@ class SemiMarkovModel(Model):
 
         for epoch in range(self.args.epochs):
             losses = []
+            multi_batch_losses = []
             for batch in tqdm.tqdm(loader, ncols=80):
                 # if self.args.cuda:
                 #     features = features.cuda()
@@ -112,24 +120,19 @@ class SemiMarkovModel(Model):
                 tasks = batch['task_name']
                 videos = batch['video_name']
                 features = batch['features']
-                labels = batch['gt_single']
                 task_indices = batch['task_indices']
                 lengths = batch['lengths']
 
                 # assert len( task_indices) == self.n_classes, "remove_background and multi-task fit() not implemented"
 
-                # # add a batch dimension
-                # lengths = torch.LongTensor([features.size(0)]).unsqueeze(0)
-                # features = features.unsqueeze(0)
-                # labels = labels.unsqueeze(0)
-                # task_indices = task_indices.unsqueeze(0)
-
                 if self.args.cuda:
                     features = features.cuda()
                     lengths = lengths.cuda()
-                    labels = labels.cuda()
 
                 if use_labels:
+                    labels = batch['gt_single']
+                    if self.args.cuda:
+                        labels = labels.cuda()
                     spans = SemiMarkovModule.labels_to_spans(labels, max_k=K)
                 else:
                     spans = None
@@ -139,13 +142,19 @@ class SemiMarkovModel(Model):
                                                        valid_classes_per_instance=task_indices,
                                                        spans=spans,
                                                        add_eos=True)
-                this_loss.backward()
-
-                losses.append(this_loss.item())
-                # TODO: grad clipping?
-                optimizer.step()
-                self.model.zero_grad()
-            callback_fn(epoch, {'train_loss': np.mean(losses)})
+                multi_batch_losses.append(this_loss)
+                if len(multi_batch_losses) >= self.args.batch_accumulation:
+                    loss = sum(multi_batch_losses) / len(multi_batch_losses)
+                    loss.backward()
+                    multi_batch_losses = []
+                    losses.append(this_loss.item())
+                    # TODO: grad clipping?
+                    optimizer.step()
+                    self.model.zero_grad()
+            train_loss = np.mean(losses)
+            if scheduler is not None:
+                scheduler.step(train_loss)
+            callback_fn(epoch, {'train_loss': train_loss})
 
     def predict(self, test_data):
         self.model.eval()

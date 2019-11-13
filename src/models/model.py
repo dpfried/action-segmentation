@@ -8,12 +8,30 @@ from utils.utils import all_equal
 
 def add_training_args(parser):
     parser.add_argument('--epochs', type=int, default=20)
+    parser.add_argument('--batch_accumulation', type=int, default=1)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--workers', type=int, default=0)
 
+    parser.add_argument('--reduce_plateau', action='store_true')
+    parser.add_argument('--reduce_plateau_factor', type=float, default=0.2)
+    parser.add_argument('--reduce_plateau_patience', type=float, default=1)
+    parser.add_argument('--reduce_plateau_min_lr', type=float, default=1e-4)
+
+
 
 def make_optimizer(args, parameters):
-    return torch.optim.Adam(parameters, lr=args.lr)
+    opt = torch.optim.Adam(parameters, lr=args.lr)
+    if args.reduce_plateau:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            opt, factor=args.reduce_plateau_factor,
+            verbose=True,
+            patience=args.reduce_plateau_patience,
+            min_lr=1e-4,
+            threshold=1e-5,
+        )
+    else:
+        scheduler = None
+    return opt, scheduler
 
 
 def padding_colate(data_samples):
@@ -33,7 +51,8 @@ def padding_colate(data_samples):
     data['lengths'] = torch.LongTensor(lengths)
 
     for key in pad_keys:
-        data[key] = torch.nn.utils.rnn.pad_sequence(unpacked[key], batch_first=True, padding_value=0)
+        if key in unpacked:
+            data[key] = torch.nn.utils.rnn.pad_sequence(unpacked[key], batch_first=True, padding_value=0)
 
     return data
 

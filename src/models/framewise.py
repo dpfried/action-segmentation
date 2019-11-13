@@ -134,7 +134,9 @@ class FramewiseDiscriminative(Model):
         assert use_labels
         loss = nn.CrossEntropyLoss()
         self.model.train()
-        optimizer = make_optimizer(self.args, self.model.parameters())
+        optimizer, scheduler = make_optimizer(self.args, self.model.parameters())
+        if scheduler is not None:
+            raise NotImplementedError("scheduler for discriminative model")
         loader = make_data_loader(self.args, train_data, batch_by_task=False, shuffle=True, batch_size=1)
 
         for epoch in range(self.args.epochs):

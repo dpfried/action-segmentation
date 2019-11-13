@@ -89,6 +89,10 @@ class Video(object):
     def load_features(self):
         raise NotImplementedError("should be implemented by subclasses")
 
+    @property
+    def has_label(self):
+        return self._has_label
+
     def features(self):
         self._check_truncation()
         if self._cache_features:
@@ -111,13 +115,16 @@ class Video(object):
             self._process_features(self.load_features())
             n_frames = self.n_frames()
         assert n_frames is not None
-        if not self._updated_length and (len(self._gt_with_background) != n_frames or not self._features_contain_background):
+        if not self._updated_length and (
+                len(self._gt_with_background) != n_frames or not self._features_contain_background):
             self._updated_length = True
             if WARN_ON_MISMATCH:
                 print(self.name, '# of gt and # of frames does not match %d / %d' %
                       (len(self._gt_with_background), n_frames))
 
-            assert len(self._gt_with_background) - n_frames <= FEATURE_LABEL_MISMATCH_TOLERANCE, "len(self._gt_with_background) = {}, n_frames = {}".format(len(self._gt_with_background), n_frames)
+            assert len(
+                self._gt_with_background) - n_frames <= FEATURE_LABEL_MISMATCH_TOLERANCE, "len(self._gt_with_background) = {}, n_frames = {}".format(
+                len(self._gt_with_background), n_frames)
             min_n = min(len(self._gt_with_background), n_frames)
             # self._gt = self._gt[:min_n]
             # self._gt_with_background = self._gt_with_background[:min_n]
@@ -223,7 +230,7 @@ class Video(object):
 
 
 class Datasplit(Dataset):
-    def __init__(self, corpus, remove_background, full=True, subsample=1):
+    def __init__(self, corpus, remove_background, full=True, subsample=1, feature_downscale=1.0):
         self._corpus = corpus
         self._remove_background = remove_background
         self._full = full
@@ -260,6 +267,8 @@ class Datasplit(Dataset):
 
         self.subsample = subsample
 
+        self.feature_downscale = feature_downscale
+
         # logger.debug('min: %f  max: %f  avg: %f' %
         #              (np.min(self._features),
         #               np.max(self._features),
@@ -289,37 +298,49 @@ class Datasplit(Dataset):
         if self.remove_background:
             task_indices = set(task_indices) - set(self.corpus._background_indices)
         task_indices = sorted(task_indices)
-        gt_single = [gt_t[0] for gt_t in video_obj.gt()]
+        if video_obj.has_label:
+            gt_single = [gt_t[0] for gt_t in video_obj.gt()]
 
         if self.subsample != 1:
-            subsample_indices = np.arange(len(gt_single) // self.subsample) * self.subsample
-            subsample_boundaries = list(zip(list(subsample_indices), list(subsample_indices-1)[1:] + [len(gt_single)-1]))
-            gt_single_sampled = list(np.array(gt_single)[subsample_indices])
+            subsample_indices = np.arange(features.shape[0] // self.subsample) * self.subsample
+            subsample_boundaries = list(
+                zip(list(subsample_indices), list(subsample_indices - 1)[1:] + [features.shape[0] - 1]))
+            if video_obj.has_label:
+                gt_single_sampled = list(np.array(gt_single)[subsample_indices])
             features = features[subsample_indices]
         else:
-            subsample_indices = np.arange(len(gt_single))
+            subsample_indices = np.arange(features.shape[0])
             subsample_boundaries = list(zip(subsample_indices, subsample_indices))
-            gt_single_sampled = gt_single
+            if video_obj.has_label:
+                gt_single_sampled = gt_single
 
         if wrap_torch:
             features = torch.from_numpy(features).float()
             task_indices = torch.LongTensor(task_indices)
-            gt_single = torch.LongTensor(gt_single)
-            gt_single_sampled = torch.LongTensor(gt_single_sampled)
+            if video_obj._has_label:
+                gt_single = torch.LongTensor(gt_single)
+                gt_single_sampled = torch.LongTensor(gt_single_sampled)
         else:
             task_indices = list(task_indices)
+
+        if self.feature_downscale != 1.0:
+            features = features / self.feature_downscale
         data = {
             'task_name': task_name,
             'video_name': video_name,
             'features': features,
-            'gt': video_obj.gt(),
-            'gt_single_unsampled': gt_single,
-            'gt_single': gt_single_sampled,
-            'gt_with_background': video_obj.gt_with_background(),
             'task_indices': task_indices,
             'subsample_indices': subsample_indices,
             'subsample_boundaries': subsample_boundaries,
         }
+
+        if video_obj._has_label:
+            data.update({
+                'gt': video_obj.gt(),
+                'gt_single_unsampled': gt_single,
+                'gt_single': gt_single_sampled,
+                'gt_with_background': video_obj.gt_with_background(),
+            })
         return data
 
     def _get_by_index(self, index, wrap_torch=True):
@@ -333,7 +354,8 @@ class Datasplit(Dataset):
     def _load_ground_truth_and_videos(self, remove_background):
         raise NotImplementedError("subclasses should implement _load_ground_truth")
 
-    def accuracy_corpus(self, optimal_assignment: bool, prediction_function, prefix='', verbose=True, compare_to_folder=None):
+    def accuracy_corpus(self, optimal_assignment: bool, prediction_function, prefix='', verbose=True,
+                        compare_to_folder=None):
         """Calculate metrics as well with previous correspondences between
         gt labels and output labels"""
         stats_by_task = {}
@@ -373,7 +395,6 @@ class Datasplit(Dataset):
                             key: np.array(val)
                             for key, val in pred_data.items()
                         }
-
 
             for video_name, video in self._videos_by_task[task].items():
                 # long_gt += list(video._gt_with_0)
@@ -492,6 +513,7 @@ class Datasplit(Dataset):
     #         video.resume()
     #     self._count_subact()
 
+
 class BatchSampler(Sampler):
     def __init__(self, datasplit: Datasplit, batch_size: int, batch_by_task: bool, shuffle: bool, seed=1):
         self.datasplit = datasplit
@@ -501,24 +523,25 @@ class BatchSampler(Sampler):
         self.seed = seed
 
         self.batches = []
+        if shuffle:
+            self.random_state = random.Random(self.seed)
+        else:
+            self.random_state = None
         task_names = list(sorted(self.datasplit._videos_by_task.keys()))
 
         videos_by_task = {
             task: list(sorted(videos))
             for task, videos in self.datasplit._videos_by_task.items()
         }
-        if self.shuffle:
-            state = random.Random(self.seed)
-            state.shuffle(task_names)
-            for videos in videos_by_task.values():
-                state.shuffle(videos)
 
         for task in task_names:
             videos = videos_by_task[task]
             for i in range(0, len(videos), self.batch_size):
-                self.batches.append([(task, video) for video in videos[i:i+self.batch_size]])
+                self.batches.append([(task, video) for video in videos[i:i + self.batch_size]])
 
     def __iter__(self):
+        if self.random_state is not None:
+            self.random_state.shuffle(self.batches)
         return iter(self.batches)
 
     def __len__(self):
@@ -540,18 +563,16 @@ class Corpus(object):
 
         self.label_indices2component_indices = {}
 
-        self._cache_features= cache_features
+        self._cache_features = cache_features
 
         self._labels_frozen = False
         self._background_labels = background_labels
         self._background_indices = []
         for label in background_labels:
             self._background_indices.append(self._index(label))
+        self._indices_by_task = {}
         self._load_mapping()
         self._labels_frozen = True
-
-        self._indices_by_task = {}
-
 
     @property
     def n_classes(self):
@@ -579,7 +600,8 @@ class Corpus(object):
 
     def _index_component(self, component_label):
         if component_label not in self.component2index:
-            assert not self._labels_frozen, "trying to index COMPONENT {} after index has been frozen".format(component_label)
+            assert not self._labels_frozen, "trying to index COMPONENT {} after index has been frozen".format(
+                component_label)
             component_idx = len(self.component2index)
             self.component2index[component_label] = component_idx
             self.index2component[component_idx] = component_label
@@ -684,5 +706,3 @@ class GroundTruth(object):
     #         sparse_segm = [i for i in val[::10]]
     #         self.gt[key] = sparse_segm
     #     self.gt_with_background = copy.deepcopy(self.gt)
-
-

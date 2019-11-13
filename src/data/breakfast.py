@@ -14,7 +14,7 @@ from utils.utils import all_equal
 
 
 class BreakfastDatasplit(Datasplit):
-    def __init__(self, corpus, remove_background, task_filter=None, splits=None, full=True, subsample=1):
+    def __init__(self, corpus, remove_background, task_filter=None, splits=None, full=True, subsample=1, feature_downscale=1.0):
         if splits is None:
             splits = list(sorted(BreakfastCorpus.DATASPLITS.keys()))
         self._splits = splits
@@ -31,7 +31,8 @@ class BreakfastDatasplit(Datasplit):
         super(BreakfastDatasplit, self).__init__(corpus,
                                                  remove_background=remove_background,
                                                  full=full,
-                                                 subsample=subsample)
+                                                 subsample=subsample,
+                                                 feature_downscale=feature_downscale)
 
     def _load_ground_truth_and_videos(self, remove_background):
         self.groundtruth = BreakfastGroundTruth(
@@ -171,9 +172,9 @@ class BreakfastCorpus(Corpus):
                     assert label in self._background_labels
                 assert _index == index
 
-    def get_datasplit(self, remove_background, task_filter=None, splits=None, full=True, subsample=1):
+    def get_datasplit(self, remove_background, task_filter=None, splits=None, full=True, subsample=1, feature_downscale=1.0):
         return BreakfastDatasplit(self, remove_background, task_filter=task_filter, splits=splits,
-                                  full=full, subsample=subsample)
+                                  full=full, subsample=subsample, feature_downscale=feature_downscale)
 
 def datasets_by_task(mapping_file, feature_root, label_root, remove_background,
                      task_ids=None, splits=BreakfastCorpus.DATASPLITS.keys(), full=True):
