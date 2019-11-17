@@ -272,9 +272,10 @@ class SemiMarkovModule(nn.Module):
         poissons = Poisson(torch.exp(log_rates))
         if log_rates.dim() == 2:
             time_steps = time_steps.unsqueeze(1).expand(max_length, log_rates.size(0), n_classes)
+            return poissons.log_prob(time_steps).transpose(0,1)
         else:
             assert log_rates.dim() == 1
-        return poissons.log_prob(time_steps).transpose(0,1)
+            return poissons.log_prob(time_steps)
 
     def length_log_probs(self, valid_classes):
         if valid_classes is None:
@@ -588,8 +589,8 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
     @classmethod
     def add_args(cls, parser):
         parser.add_argument('--sm_component_decompose_steps', action='store_true')
-        parser.add_argument('--sm_component_mean_layers', type=int, default=1)
-        parser.add_argument('--sm_component_length_layers', type=int, default=1)
+        parser.add_argument('--sm_component_mean_layers', type=int, default=2)
+        parser.add_argument('--sm_component_length_layers', type=int, default=2)
         parser.add_argument('--sm_component_embedding_dim', type=int, default=100)
         parser.add_argument('--sm_component_separate_embeddings', action='store_true')
         parser.add_argument('--sm_component_z_dim', type=int, default=0)

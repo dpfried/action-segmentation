@@ -94,8 +94,12 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
 
         all_mof = np.array([stats['mof'] for stats in stats_by_name.values()])
         sum_mof = all_mof.sum(axis=0)
-        right, total = sum_mof
-        return float(right) / total
+        all_mof_non_bg = np.array([stats['mof_non_bg'] for stats in stats_by_name.values()])
+        sum_mof_non_bg = all_mof_non_bg.sum(axis=0)
+        return {
+            '{}_mof'.format(name): float(sum_mof[0]) / sum_mof[1],
+            '{}_mof_non_bg'.format(name): float(sum_mof_non_bg[0]) / sum_mof_non_bg[1],
+        }
 
     models_by_epoch = {}
     dev_mof_by_epoch = {}
@@ -105,21 +109,26 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
         stats_by_epoch[epoch] = stats
         if train_sub_data is not None:
             train_name = 'train_subset'
-            train_mof = evaluate_on_data(train_sub_data, train_name)
+            train_stats = evaluate_on_data(train_sub_data, train_name)
         else:
             train_name = 'train'
-            train_mof = evaluate_on_data(train_data, train_name)
-        dev_mof = evaluate_on_data(dev_data, 'dev')
+            train_stats = evaluate_on_data(train_data, train_name)
+        dev_stats = evaluate_on_data(dev_data, 'dev')
         log_str = '{}\tepoch {:2d}'.format(split_name, epoch)
         for stat, value in stats.items():
             if isinstance(value, float):
                 log_str += '\t{} {:.4f}'.format(stat, value)
             else:
                 log_str += '\t{} {}'.format(stat, value)
-        log_str += '\t{} mof {:.4f}\tdev mof {:.4f}'.format(train_name, train_mof, dev_mof)
+        # log_str += '\t{} '.format(train_name)
+        for stats in [train_stats, dev_stats]:
+            log_str += '\t'
+            for name, val in sorted(stats.items()):
+                log_str += ' {} {:.4f}'.format(name, val)
+        # log_str += '\t{} mof {:.4f}\tdev mof {:.4f}'.format(train_name, train_mof, dev_mof)
         logger.debug(log_str)
         models_by_epoch[epoch] = pickle.dumps(model)
-        dev_mof_by_epoch[epoch] = dev_mof
+        dev_mof_by_epoch[epoch] = dev_stats['dev_mof']
 
     model.fit(train_data, use_labels=use_labels, callback_fn=callback_fn)
 

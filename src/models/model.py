@@ -5,16 +5,16 @@ from data.corpus import Datasplit
 
 
 def add_training_args(parser):
-    parser.add_argument('--epochs', type=int, default=20)
+    parser.add_argument('--epochs', type=int, default=30)
     parser.add_argument('--batch_accumulation', type=int, default=1)
-    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--lr', type=float, default=5e-3)
     parser.add_argument('--workers', type=int, default=0)
 
     parser.add_argument('--max_grad_norm', type=float, default=3)
 
-    parser.add_argument('--print_every', type=int)
+    parser.add_argument('--print_every', type=int, default=100)
 
-    parser.add_argument('--reduce_plateau', action='store_true')
+    parser.add_argument('--no_reduce_plateau', action='store_true')
     parser.add_argument('--reduce_plateau_factor', type=float, default=0.2)
     parser.add_argument('--reduce_plateau_patience', type=float, default=1)
     parser.add_argument('--reduce_plateau_min_lr', type=float, default=1e-4)
@@ -22,9 +22,9 @@ def add_training_args(parser):
 
 def make_optimizer(args, parameters):
     opt = torch.optim.Adam(parameters, lr=args.lr)
-    if args.reduce_plateau:
+    if not args.no_reduce_plateau:
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            opt, factor=args.reduce_plateau_factor,
+            opt, factor=not args.reduce_plateau_factor,
             verbose=True,
             patience=args.reduce_plateau_patience,
             min_lr=1e-4,
