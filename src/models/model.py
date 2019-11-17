@@ -3,8 +3,6 @@ from torch.utils.data import DataLoader
 
 from data.corpus import Datasplit
 
-from utils.utils import all_equal
-
 
 def add_training_args(parser):
     parser.add_argument('--epochs', type=int, default=20)
@@ -16,7 +14,6 @@ def add_training_args(parser):
     parser.add_argument('--reduce_plateau_factor', type=float, default=0.2)
     parser.add_argument('--reduce_plateau_patience', type=float, default=1)
     parser.add_argument('--reduce_plateau_min_lr', type=float, default=1e-4)
-
 
 
 def make_optimizer(args, parameters):

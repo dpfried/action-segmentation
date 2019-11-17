@@ -2,6 +2,7 @@ import copy
 import numpy as np
 import tqdm
 
+import torch
 from data.corpus import Datasplit
 from models.model import Model, make_optimizer, make_data_loader
 from models.semimarkov.semimarkov_modules import SemiMarkovModule, ComponentSemiMarkovModule
@@ -110,6 +111,8 @@ class SemiMarkovModel(Model):
         K = self.args.sm_max_span_length
 
         for epoch in range(self.args.epochs):
+            # call here since we may set eval in callback_fn
+            self.model.train()
             losses = []
             multi_batch_losses = []
             for batch in tqdm.tqdm(loader, ncols=80):
@@ -176,9 +179,9 @@ class SemiMarkovModel(Model):
                 lengths = lengths.cuda()
 
             videos = batch['video_name']
-
-            pred_spans = self.model.viterbi(features, lengths, task_indices, add_eos=True)
-            pred_labels = SemiMarkovModule.spans_to_labels(pred_spans)
+            with torch.no_grad():
+                pred_spans = self.model.viterbi(features, lengths, task_indices, add_eos=True)
+                pred_labels = SemiMarkovModule.spans_to_labels(pred_spans)
             pred_labels_trim_s = self.model.trim(pred_labels, lengths, check_eos=True)
 
             # assert len(pred_labels_trim_s) == 1, "batch size should be 1"

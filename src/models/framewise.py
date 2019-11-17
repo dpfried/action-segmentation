@@ -133,13 +133,14 @@ class FramewiseDiscriminative(Model):
     def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
         assert use_labels
         loss = nn.CrossEntropyLoss()
-        self.model.train()
         optimizer, scheduler = make_optimizer(self.args, self.model.parameters())
         if scheduler is not None:
             raise NotImplementedError("scheduler for discriminative model")
         loader = make_data_loader(self.args, train_data, batch_by_task=False, shuffle=True, batch_size=1)
 
         for epoch in range(self.args.epochs):
+            # call here since we may set eval in callback_fn
+            self.model.train()
             losses = []
             for batch in tqdm.tqdm(loader, ncols=80):
             # for batch in loader:

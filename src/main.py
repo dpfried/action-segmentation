@@ -11,6 +11,7 @@ from data.breakfast import BreakfastCorpus
 from data.corpus import Datasplit
 from data.crosstask import CrosstaskCorpus
 from models.framewise import FramewiseGaussianMixture, FramewiseDiscriminative, FramewiseBaseline
+from models.sequential import SequentialDiscriminative
 from models.model import Model, add_training_args
 from models.semimarkov.semimarkov import SemiMarkovModel
 from utils.logger import logger
@@ -20,6 +21,7 @@ CLASSIFIERS = {
     'framewise_gaussian_mixture': FramewiseGaussianMixture,
     'framewise_baseline': FramewiseBaseline,
     'semimarkov': SemiMarkovModel,
+    'sequential_discriminative': SequentialDiscriminative,
 }
 
 
