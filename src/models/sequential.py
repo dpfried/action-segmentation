@@ -5,10 +5,6 @@ import torch.nn as nn
 from models.model import Model, make_optimizer, make_data_loader
 from utils.utils import all_equal
 
-from models.semimarkov.semimarkov_modules import semimarkov_sufficient_stats
-
-from collections import Counter
-
 from data.corpus import Datasplit
 
 
@@ -25,14 +21,9 @@ class Encoder(nn.Module):
         self.encoder = nn.LSTM(input_dim, output_dim // 2, bidirectional=True, num_layers=args.seq_num_layers, batch_first=True)
 
     def forward(self, features, lengths, output_padding_value=0):
-        batch_size = features.size(0)
-
         packed = nn.utils.rnn.pack_padded_sequence(features, lengths, batch_first=True, enforce_sorted=False)
-
         encoded_packed, _ = self.encoder(packed)
-
-        encoded, lengths2 = nn.utils.rnn.pad_packed_sequence(encoded_packed, batch_first=True, padding_value=output_padding_value)
-
+        encoded, _ = nn.utils.rnn.pad_packed_sequence(encoded_packed, batch_first=True, padding_value=output_padding_value)
         return encoded
 
 class SequentialPredictFrames(nn.Module):

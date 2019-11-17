@@ -11,20 +11,9 @@ from models.semimarkov.semimarkov_modules import SemiMarkovModule, ComponentSemi
 class SemiMarkovModel(Model):
     @classmethod
     def add_args(cls, parser):
-        parser.add_argument('--sm_max_span_length', type=int, default=20)
-        parser.add_argument('--sm_supervised_state_smoothing', type=float, default=1e-2)
-        parser.add_argument('--sm_supervised_length_smoothing', type=float, default=1e-1)
-        parser.add_argument('--sm_supervised_method',
-                            choices=['closed-form', 'gradient-based', 'closed-then-gradient'],
-                            default='closed-form')
-
+        SemiMarkovModule.add_args(parser)
+        ComponentSemiMarkovModule.add_args(parser)
         parser.add_argument('--sm_component_model', action='store_true')
-        parser.add_argument('--sm_component_decompose_steps', action='store_true')
-        parser.add_argument('--sm_component_mean_layers', type=int, default=1)
-        parser.add_argument('--sm_component_length_layers', type=int, default=1)
-        parser.add_argument('--sm_component_embedding_dim', type=int, default=100)
-        parser.add_argument('--sm_component_separate_embeddings', action='store_true')
-
 
     @classmethod
     def from_args(cls, args, train_data):
@@ -43,21 +32,16 @@ class SemiMarkovModel(Model):
                     cls: {cls}
                     for cls in range(n_classes)
                 }
-            model = ComponentSemiMarkovModule(n_classes,
+            model = ComponentSemiMarkovModule(args,
+                                              n_classes,
                                               n_components=n_components,
                                               class_to_components=class_to_components,
                                               feature_dim=feature_dim,
-                                              embedding_dim=args.sm_component_embedding_dim,
-                                              allow_self_transitions=True,
-                                              max_k=args.sm_max_span_length,
-                                              per_class_bias=True,
-                                              mean_layers=args.sm_component_mean_layers,
-                                              length_layers=args.sm_component_length_layers,
-                                              use_separate_embeddings=args.sm_component_separate_embeddings)
+                                              allow_self_transitions=True)
         else:
-            model = SemiMarkovModule(n_classes,
+            model = SemiMarkovModule(args,
+                                     n_classes,
                                      feature_dim,
-                                     max_k=args.sm_max_span_length,
                                      allow_self_transitions=True)
         return SemiMarkovModel(args, n_classes, feature_dim, model)
 
@@ -76,8 +60,7 @@ class SemiMarkovModel(Model):
         for batch in loader:
             features.append(batch['features'].squeeze(0))
             labels.append(batch['gt_single'].squeeze(0))
-        self.model.fit_supervised(features, labels, self.args.sm_supervised_state_smoothing,
-                                  self.args.sm_supervised_length_smoothing)
+        self.model.fit_supervised(features, labels)
 
     def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
         self.model.train()
@@ -115,7 +98,13 @@ class SemiMarkovModel(Model):
             self.model.train()
             losses = []
             multi_batch_losses = []
-            for batch in tqdm.tqdm(loader, ncols=80):
+            nlls = []
+            kls = []
+            num_frames = 0
+            num_videos = 0
+            train_nll = 0
+            train_kl = 0
+            for batch_ix, batch in enumerate(tqdm.tqdm(loader, ncols=80)):
                 # if self.args.cuda:
                 #     features = features.cuda()
                 #     task_indices = task_indices.cuda()
@@ -125,6 +114,9 @@ class SemiMarkovModel(Model):
                 features = batch['features']
                 task_indices = batch['task_indices']
                 lengths = batch['lengths']
+
+                num_frames += lengths.sum().item()
+                num_videos += len(lengths)
 
                 # assert len( task_indices) == self.n_classes, "remove_background and multi-task fit() not implemented"
 
@@ -137,27 +129,57 @@ class SemiMarkovModel(Model):
                     if self.args.cuda:
                         labels = labels.cuda()
                     spans = SemiMarkovModule.labels_to_spans(labels, max_k=K)
+                    use_mean_z = True
                 else:
                     spans = None
+                    use_mean_z = False
 
-                this_loss = -self.model.log_likelihood(features,
-                                                       lengths,
-                                                       valid_classes_per_instance=task_indices,
-                                                       spans=spans,
-                                                       add_eos=True)
+                nll = -self.model.log_likelihood(features,
+                                                 lengths,
+                                                 valid_classes_per_instance=task_indices,
+                                                 spans=spans,
+                                                 add_eos=True,
+                                                 use_mean_z=use_mean_z)
+                kl = self.model.kl.mean()
+                this_loss = nll + kl
                 multi_batch_losses.append(this_loss)
+                nlls.append(nll.item())
+                kls.append(kl.item())
+
+                train_nll += (nll.item() * len(videos))
+                train_kl += (kl.item() * len(videos))
+
+                losses.append(this_loss.item())
+
                 if len(multi_batch_losses) >= self.args.batch_accumulation:
                     loss = sum(multi_batch_losses) / len(multi_batch_losses)
                     loss.backward()
                     multi_batch_losses = []
-                    losses.append(this_loss.item())
-                    # TODO: grad clipping?
+                    if self.args.max_grad_norm is not None:
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.max_grad_norm)
+
+                    if self.args.print_every and (batch_ix % self.args.print_every == 0):
+                        param_norm = sum([p.norm()**2 for p in self.model.parameters()]).item()**0.5
+                        gparam_norm = sum([p.grad.norm()**2 for p in self.model.parameters()
+                                           if p.grad is not None]).item()**0.5
+                        log_str = 'Epoch: %02d, Batch: %03d/%03d, |Param|: %.6f, |GParam|: %.2f, ' + \
+                                  'loss: %.4f, recon: %.4f, kl: %.4f, recon_bound: %.2f'
+                        tqdm.tqdm.write(log_str %
+                                        (epoch, batch_ix, len(loader), param_norm, gparam_norm,
+                                         (train_nll + train_kl) / num_videos,
+                                         train_nll / num_frames,
+                                         train_kl / num_frames,
+                                         (train_nll + train_kl) / num_frames))
+
                     optimizer.step()
                     self.model.zero_grad()
             train_loss = np.mean(losses)
             if scheduler is not None:
                 scheduler.step(train_loss)
-            callback_fn(epoch, {'train_loss': train_loss})
+            callback_fn(epoch, {'train_loss_vid_avg': train_loss,
+                                'train_nll_frame_avg': train_nll / num_frames,
+                                'train_kl_vid_avg': train_kl / num_videos,
+                                'train_recon_bound': (train_kl + train_kl) / num_frames})
 
     def predict(self, test_data):
         self.model.eval()
@@ -180,7 +202,8 @@ class SemiMarkovModel(Model):
 
             videos = batch['video_name']
             with torch.no_grad():
-                pred_spans = self.model.viterbi(features, lengths, task_indices, add_eos=True)
+                # TODO: figure out under which eval conditions use_mean_z should be False
+                pred_spans = self.model.viterbi(features, lengths, task_indices, add_eos=True, use_mean_z=True)
                 pred_labels = SemiMarkovModule.spans_to_labels(pred_spans)
             pred_labels_trim_s = self.model.trim(pred_labels, lengths, check_eos=True)
 

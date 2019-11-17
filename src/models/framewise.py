@@ -134,8 +134,6 @@ class FramewiseDiscriminative(Model):
         assert use_labels
         loss = nn.CrossEntropyLoss()
         optimizer, scheduler = make_optimizer(self.args, self.model.parameters())
-        if scheduler is not None:
-            raise NotImplementedError("scheduler for discriminative model")
         loader = make_data_loader(self.args, train_data, batch_by_task=False, shuffle=True, batch_size=1)
 
         for epoch in range(self.args.epochs):
@@ -161,7 +159,10 @@ class FramewiseDiscriminative(Model):
 
                 optimizer.step()
                 self.model.zero_grad()
-            callback_fn(epoch, {'train_loss': np.mean(losses)})
+            train_loss = np.mean(losses)
+            callback_fn(epoch, {'train_loss': train_loss})
+            if scheduler is not None:
+                scheduler.step(train_loss)
             # if evaluate_on_data_fn is not None:
             #     train_mof = evaluate_on_data_fn(self, train_data, 'train')
             #     dev_mof = evaluate_on_data_fn(self, dev_data, 'dev')
