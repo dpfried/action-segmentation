@@ -105,7 +105,7 @@ class SemiMarkovModule(nn.Module):
                             choices=['closed-form', 'gradient-based', 'closed-then-gradient'],
                             default='closed-form')
 
-    def __init__(self, args, n_classes, n_dims, allow_self_transitions=False):
+    def __init__(self, args, n_classes, n_dims, allow_self_transitions=False, learn_transitions=True):
         super(SemiMarkovModule, self).__init__()
         self.args = args
         self.n_classes = n_classes
@@ -113,6 +113,16 @@ class SemiMarkovModule(nn.Module):
         self.allow_self_transitions = allow_self_transitions
         self.init_params()
         self.max_k = args.sm_max_span_length
+        self._learn_transitions = learn_transitions
+
+    @property
+    def learn_transitions(self):
+        # backward compat for unpickling existing models
+        try:
+            return self._learn_transitions
+        except:
+            self._learn_transitions = True
+            return self._learn_transitions
 
     def init_params(self):
         poisson_log_rates = torch.zeros(self.n_classes).float()
@@ -127,11 +137,14 @@ class SemiMarkovModule(nn.Module):
 
         # target x source
         transition_logits = torch.zeros(self.n_classes, self.n_classes).float()
-        self.transition_logits = nn.Parameter(transition_logits, requires_grad=True)
+        self.transition_logits = nn.Parameter(transition_logits, requires_grad=self.learn_transitions)
 
         init_logits = torch.zeros(self.n_classes).float()
-        self.init_logits = nn.Parameter(init_logits, requires_grad=True)
+        self.init_logits = nn.Parameter(init_logits, requires_grad=self.learn_transitions)
         torch.nn.init.uniform_(self.init_logits, 0, 1)
+
+    def flatten_parameters(self):
+        pass
 
     def fit_supervised(self, feature_list, label_list):
         emission_gmm, stats = semimarkov_sufficient_stats(
@@ -585,16 +598,17 @@ class ResidualLayer(nn.Module):
 
 class ComponentSemiMarkovModule(SemiMarkovModule):
     # portions of this code are adapted from Yoon Kim's Compound PCFG
-    # https://github.com/harvardnlp/compound-pcfg/blob/master/models.py
+    # github.com/harvardnlp/compound-pcfg/blob/master/models.py
     @classmethod
     def add_args(cls, parser):
         parser.add_argument('--sm_component_decompose_steps', action='store_true')
         parser.add_argument('--sm_component_mean_layers', type=int, default=2)
         parser.add_argument('--sm_component_length_layers', type=int, default=2)
         parser.add_argument('--sm_component_embedding_dim', type=int, default=100)
-        parser.add_argument('--sm_component_separate_embeddings', action='store_true')
+        # parser.add_argument('--sm_component_separate_embeddings', action='store_true')
         parser.add_argument('--sm_component_z_dim', type=int, default=0)
         parser.add_argument('--sm_component_z_hidden_dim', type=int, default=100)
+        parser.add_argument('--no_sm_compound_structure', action='store_false', dest='sm_compound_structure')
 
     def __init__(self,
                  args,
@@ -610,6 +624,10 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
 
         self.z_dim = self.args.sm_component_z_dim
         self.embedding_and_z_dim = self.embedding_dim + self.z_dim
+        if self.args.sm_compound_structure:
+            self.structure_emb_dim = self.embedding_and_z_dim
+        else:
+            self.structure_emb_dim = self.embedding_dim
 
         self.class_to_components = class_to_components
 
@@ -623,7 +641,8 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         self.per_class_bias = per_class_bias
         self.mean_layers = self.args.sm_component_mean_layers
         self.length_layers = self.args.sm_component_length_layers
-        self.use_separate_embeddings = self.args.sm_component_separate_embeddings
+        # self.use_separate_embeddings = self.args.sm_component_separate_embeddings
+        self.use_separate_embeddings = True
         super(ComponentSemiMarkovModule, self).__init__(args, n_classes, feature_dim, allow_self_transitions)
 
     def init_params(self):
@@ -644,14 +663,14 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
             self.shared_embeddings = make_embeddings()
 
         # p(class) \propto exp(w \cdot embed(class) + b_class)
-        self.initial_weights = nn.Linear(self.embedding_and_z_dim, 1, bias=True)
+        self.initial_weights = nn.Linear(self.structure_emb_dim, 1, bias=True)
         if self.per_class_bias:
             self.initial_bias = nn.Parameter(torch.zeros(self.n_classes))
         else:
             self.initial_bias = None
 
         # p(class_2 | class_1) \propto exp(f(embed(class_1)) embed(class_2) + b_class_2)
-        self.transition_weights = nn.Linear(self.embedding_and_z_dim, self.embedding_and_z_dim, bias=True)
+        self.transition_weights = nn.Linear(self.structure_emb_dim, self.structure_emb_dim, bias=True)
         if self.per_class_bias:
             self.transition_bias = nn.Parameter(torch.zeros(self.n_classes))
         else:
@@ -664,7 +683,7 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         self.emission_mean_mlp = nn.Sequential(*emission_mean_mlp)
         self.emission_mean_bias = nn.Parameter(torch.zeros(self.feature_dim))
 
-        length_mlp = [nn.Linear(self.embedding_and_z_dim, self.embedding_dim)]
+        length_mlp = [nn.Linear(self.structure_emb_dim, self.embedding_dim)]
         for _ in range(self.length_layers):
             length_mlp.append(ResidualLayer(self.embedding_dim, self.embedding_dim))
         length_mlp.append(nn.Linear(self.embedding_dim, 1))
@@ -687,6 +706,10 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         for name, param in self.named_parameters():
             if param.dim() > 1 and name not in ['gaussian_cov']:
                 xavier_uniform_(param)
+
+    def flatten_parameters(self):
+        if self.z_dim != 0:
+            self.encoder.flatten_parameters()
 
     def _initialize_gaussian_means(self, mean):
         # self.gaussian_means.data = mean.expand((self.n_classes, self.n_dims))
@@ -728,7 +751,7 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         # kl: batch_size
         self.z, self.kl = self._get_z_and_kl(features, lengths, use_mean)
 
-    def embed_classes(self, component_embeddings, valid_classes):
+    def embed_classes(self, component_embeddings, valid_classes, is_structure):
         if valid_classes is None:
             valid_classes = torch.arange(self.n_classes, device=component_embeddings.weight.device)
         assert valid_classes.dim() == 1, valid_classes
@@ -749,7 +772,7 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
             torch.tensor(offsets, device=component_embeddings.weight.device, dtype=torch.long))
         n_valid_c, e_dim = emb.size()
         emb = emb.unsqueeze(0)
-        if self.z_dim > 0:
+        if self.z_dim > 0 and (self.args.sm_compound_structure or not is_structure):
             assert hasattr(self, 'z'), 'make sure set_z has been called'
             batch, z_dim = self.z.size()
             emb = emb.expand(batch, n_valid_c, e_dim)
@@ -765,7 +788,8 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         # batch_size|1 x len(valid_classes) x embedding_dim
         class_embeddings = self.embed_classes(
             self.initial_embeddings if self.use_separate_embeddings else self.shared_embeddings,
-            valid_classes
+            valid_classes,
+            is_structure=True
         )
         x = self.initial_weights(class_embeddings)
         x = x.squeeze(-1)
@@ -777,7 +801,8 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         # batch_size|1 x len(valid_classes) x embedding_dim
         class_embeddings = self.embed_classes(
             self.transition_embeddings if self.use_separate_embeddings else self.shared_embeddings,
-            valid_classes
+            valid_classes,
+            is_structure=True
         )
         x = self.transition_weights(class_embeddings)
         x = torch.einsum("bfe,bte->btf", [x, class_embeddings])
@@ -794,7 +819,8 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         # batch_size|1 x len(valid_classes) x embedding_dim
         class_embeddings = self.embed_classes(
             self.emission_embeddings if self.use_separate_embeddings else self.shared_embeddings,
-            valid_classes
+            valid_classes,
+            is_structure=False
         )
         # batch_size|1 x len(valid_classes) x feature_dim
         class_means = self.emission_mean_mlp(class_embeddings)
@@ -805,7 +831,8 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         # batch_size|1 x len(valid_classes) x embedding_dim
         class_embeddings = self.embed_classes(
             self.length_embeddings if self.use_separate_embeddings else self.shared_embeddings,
-            valid_classes
+            valid_classes,
+            is_structure=True
         )
         # batch_size|1 x len(valid_classes)
         class_log_rates = self.length_mlp(class_embeddings).squeeze(-1)

@@ -20,11 +20,104 @@ class Encoder(nn.Module):
         # TODO: dropout?
         self.encoder = nn.LSTM(input_dim, output_dim // 2, bidirectional=True, num_layers=args.seq_num_layers, batch_first=True)
 
+    def flatten_parameters(self):
+        self.encoder.flatten_parameters()
+
     def forward(self, features, lengths, output_padding_value=0):
         packed = nn.utils.rnn.pack_padded_sequence(features, lengths, batch_first=True, enforce_sorted=False)
         encoded_packed, _ = self.encoder(packed)
         encoded, _ = nn.utils.rnn.pad_packed_sequence(encoded_packed, batch_first=True, padding_value=output_padding_value)
         return encoded
+
+class SequentialCanonicalBaseline(Model):
+    @classmethod
+    def add_args(cls, parser):
+        parser.add_argument('--canonical_baseline_background_fraction', type=float, default=0.0)
+
+    @classmethod
+    def from_args(cls, args, train_data: Datasplit):
+        return SequentialCanonicalBaseline(args, train_data)
+
+    def __init__(self, args, train_data: Datasplit):
+        from data.crosstask import CrosstaskDatasplit
+        assert isinstance(train_data, CrosstaskDatasplit)
+        self.args = args
+        self.n_classes = train_data._corpus.n_classes
+        self.remove_background = train_data.remove_background
+
+        self.ordered_nonbackground_indices_by_task = {
+            task_id: [train_data.corpus._index(step) for step in task.steps]
+            for task_id, task in train_data._tasks_by_id.items()
+        }
+
+        self.background_indices_by_task = {
+            task_id: list(sorted(ix for ix in train_data.corpus.indices_by_task(task_id)
+                      if ix in set(train_data.corpus._background_indices)))
+            for task_id in train_data._tasks_by_id.keys()
+        }
+        assert all(len(v) == 1 for v in self.background_indices_by_task.values()), self.background_indices_by_task
+
+    def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
+        pass
+
+    def predict_single(self, task_id, num_timesteps):
+        if self.remove_background:
+            num_background_frames = 0
+        else:
+            num_background_frames = int(num_timesteps * self.args.canonical_baseline_background_fraction)
+            background_index = next(iter(self.background_indices_by_task[task_id]))
+
+        nonbackground_indices = self.ordered_nonbackground_indices_by_task[task_id]
+
+        # this fails if we've removed background b/c some videos are too short
+        if not self.remove_background:
+            assert num_timesteps >= len(nonbackground_indices)
+
+        # expand the total nonbackground duration to fit all background frames
+        num_nonbackground_frames = max(num_timesteps - num_background_frames, len(nonbackground_indices))
+
+        step_duration = num_nonbackground_frames // len(nonbackground_indices)
+        assert step_duration >= 1
+
+        if self.remove_background:
+            background_duration = 0
+            pad = nonbackground_indices[-1]
+        else:
+            background_duration = (num_timesteps - step_duration * len(nonbackground_indices)) // (len(nonbackground_indices) + 1)
+            assert background_duration >= 0
+            pad = background_index
+
+        indices = []
+        for step_ix in nonbackground_indices:
+            if not self.remove_background:
+                indices.extend([background_index] * background_duration)
+            indices.extend([step_ix] * step_duration)
+
+        if not self.remove_background:
+            assert len(indices) <= num_timesteps
+        assert num_timesteps - len(indices) - background_duration <= len(nonbackground_indices) + 1
+        indices.extend([pad] * (num_timesteps - len(indices)))
+        # hack for remove_background case: some videos have e.g. only 6 frames for 8 steps
+        indices = indices[:num_timesteps]
+        return indices
+
+    def predict(self, test_data: Datasplit):
+        predictions = {}
+        loader = make_data_loader(self.args, test_data, batch_by_task=False, shuffle=False, batch_size=1)
+
+        for batch in loader:
+            features = batch['features'].squeeze(0)
+            num_timesteps = features.size(0)
+
+            tasks = batch['task_name']
+            assert len(tasks) == 1
+            task = next(iter(tasks))
+            videos = batch['video_name']
+            assert len(videos) == 1
+            video = next(iter(videos))
+
+            predictions[video] = self.predict_single(task, num_timesteps)
+        return predictions
 
 class SequentialPredictFrames(nn.Module):
     @classmethod

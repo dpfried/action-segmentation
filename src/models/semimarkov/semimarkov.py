@@ -64,6 +64,7 @@ class SemiMarkovModel(Model):
 
     def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
         self.model.train()
+        self.model.flatten_parameters()
         initialize = True
         if use_labels and self.args.sm_supervised_method in ['closed-form', 'closed-then-gradient']:
             self.fit_supervised(train_data)
@@ -141,7 +142,10 @@ class SemiMarkovModel(Model):
                                                  add_eos=True,
                                                  use_mean_z=use_mean_z)
                 kl = self.model.kl.mean()
-                this_loss = nll + kl
+                if use_labels:
+                    this_loss = nll
+                else:
+                    this_loss = nll + kl
                 multi_batch_losses.append(this_loss)
                 nlls.append(nll.item())
                 kls.append(kl.item())
@@ -155,21 +159,22 @@ class SemiMarkovModel(Model):
                     loss = sum(multi_batch_losses) / len(multi_batch_losses)
                     loss.backward()
                     multi_batch_losses = []
-                    if self.args.max_grad_norm is not None:
-                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.max_grad_norm)
 
                     if self.args.print_every and (batch_ix % self.args.print_every == 0):
                         param_norm = sum([p.norm()**2 for p in self.model.parameters()]).item()**0.5
                         gparam_norm = sum([p.grad.norm()**2 for p in self.model.parameters()
                                            if p.grad is not None]).item()**0.5
-                        log_str = 'Epoch: %02d, Batch: %03d/%03d, |Param|: %.6f, |GParam|: %.2f, ' + \
+                        log_str = 'Epoch: %02d, Batch: %03d/%03d, |Param|: %.6f, |GParam|: %.2f, lr: %.2E, ' + \
                                   'loss: %.4f, recon: %.4f, kl: %.4f, recon_bound: %.2f'
                         tqdm.tqdm.write(log_str %
                                         (epoch, batch_ix, len(loader), param_norm, gparam_norm,
+                                         optimizer.param_groups[0]["lr"],
                                          (train_nll + train_kl) / num_videos,
                                          train_nll / num_frames,
                                          train_kl / num_frames,
                                          (train_nll + train_kl) / num_frames))
+                    if self.args.max_grad_norm is not None:
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.max_grad_norm)
 
                     optimizer.step()
                     self.model.zero_grad()
@@ -183,8 +188,10 @@ class SemiMarkovModel(Model):
 
     def predict(self, test_data):
         self.model.eval()
+        self.model.flatten_parameters()
         predictions = {}
-        loader = make_data_loader(self.args, test_data, shuffle=False, batch_by_task=True, batch_size=self.args.batch_size)
+        # for some reason, EOM errors happen more frequently in viterbi, so reduce batch size
+        loader = make_data_loader(self.args, test_data, shuffle=False, batch_by_task=True, batch_size=self.args.batch_size // 2)
         for batch in tqdm.tqdm(loader, ncols=80):
             features = batch['features']
             task_indices = batch['task_indices']
@@ -201,10 +208,9 @@ class SemiMarkovModel(Model):
                 lengths = lengths.cuda()
 
             videos = batch['video_name']
-            with torch.no_grad():
-                # TODO: figure out under which eval conditions use_mean_z should be False
-                pred_spans = self.model.viterbi(features, lengths, task_indices, add_eos=True, use_mean_z=True)
-                pred_labels = SemiMarkovModule.spans_to_labels(pred_spans)
+            # TODO: figure out under which eval conditions use_mean_z should be False
+            pred_spans = self.model.viterbi(features, lengths, task_indices, add_eos=True, use_mean_z=True)
+            pred_labels = SemiMarkovModule.spans_to_labels(pred_spans)
             pred_labels_trim_s = self.model.trim(pred_labels, lengths, check_eos=True)
 
             # assert len(pred_labels_trim_s) == 1, "batch size should be 1"

@@ -24,7 +24,7 @@ def make_optimizer(args, parameters):
     opt = torch.optim.Adam(parameters, lr=args.lr)
     if not args.no_reduce_plateau:
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            opt, factor=not args.reduce_plateau_factor,
+            opt, factor=args.reduce_plateau_factor,
             verbose=True,
             patience=args.reduce_plateau_patience,
             min_lr=1e-4,
