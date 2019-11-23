@@ -503,6 +503,8 @@ class Datasplit(Dataset):
                 stats['comparison_mof'] = comparison_stats['mof']
                 stats['comparison_mof_bg'] = comparison_stats['mof_bg']
                 stats['comparison_mof_non_bg'] = comparison_stats['mof_non_bg']
+                stats['comparison_step_recall_non_bg'] = comparison_stats['step_recall_non_bg']
+                stats['comparison_mean_normed_levenshtein'] = comparison_stats['mean_normed_levenshtein']
 
             stats_by_task[task] = accuracy.stat()
         return stats_by_task

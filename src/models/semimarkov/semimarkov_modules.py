@@ -3,80 +3,20 @@ from typing import Dict, Set
 import numpy as np
 import torch
 import torch.nn.functional as F
-from sklearn.mixture import GaussianMixture
 from torch import nn
+from torch.autograd import Variable
 from torch.distributions import MultivariateNormal, Poisson
 from torch.nn.init import xavier_uniform_
 from torch_struct import SemiMarkovCRF
-from torch.autograd import Variable
 
+from models.framewise import FeedForward
 from models.sequential import Encoder
+from models.flow import NICETrans
 from utils.utils import all_equal
 
+from models.semimarkov.semimarkov_utils import semimarkov_sufficient_stats
+
 BIG_NEG = -1e9
-
-
-def get_diagonal_covariances(data):
-    # data: num_points x feat_dim
-    model = GaussianMixture(n_components=1, covariance_type='diag')
-    responsibilities = np.ones((data.shape[0], 1))
-    model._initialize(data, responsibilities)
-    return model.covariances_, model.precisions_cholesky_
-
-
-def semimarkov_sufficient_stats(feature_list, label_list, covariance_type, n_classes, max_k=None):
-    assert len(feature_list) == len(label_list)
-    tied_diag = covariance_type == 'tied_diag'
-    if tied_diag:
-        emissions = GaussianMixture(n_classes, covariance_type='diag')
-    else:
-        emissions = GaussianMixture(n_classes, covariance_type=covariance_type)
-    X_l = []
-    r_l = []
-
-    span_counts = np.zeros(n_classes, dtype=np.float32)
-    span_lengths = np.zeros(n_classes, dtype=np.float32)
-    span_start_counts = np.zeros(n_classes, dtype=np.float32)
-    # to, from
-    span_transition_counts = np.zeros((n_classes, n_classes), dtype=np.float32)
-
-    instance_count = 0
-
-    # for i in tqdm.tqdm(list(range(len(train_data))), ncols=80):
-    for X, labels in zip(feature_list, label_list):
-        X_l.append(X)
-        r = np.zeros((X.shape[0], n_classes))
-        r[np.arange(X.shape[0]), labels] = 1
-        assert r.sum() == X.shape[0]
-        r_l.append(r)
-        spans = SemiMarkovModule.labels_to_spans(labels.unsqueeze(0), max_k)
-        # symbol, length
-        rle_spans = SemiMarkovModule.rle_spans(spans, torch.LongTensor([spans.size(1)]))[0]
-        last_symbol = None
-        for index, (symbol, length) in enumerate(rle_spans):
-            if index == 0:
-                span_start_counts[symbol] += 1
-            span_counts[symbol] += 1
-            span_lengths[symbol] += length
-            if last_symbol is not None:
-                span_transition_counts[symbol, last_symbol] += 1
-            last_symbol = symbol
-        instance_count += 1
-
-    X_arr = np.vstack(X_l)
-    r_arr = np.vstack(r_l)
-    emissions._initialize(X_arr, r_arr)
-    if tied_diag:
-        cov, prec_chol = get_diagonal_covariances(X_arr)
-        emissions.covariances_[:] = np.copy(cov)
-        emissions.precisions_cholesky_[:] = np.copy(prec_chol)
-    return emissions, {
-        'span_counts': span_counts,
-        'span_lengths': span_lengths,
-        'span_start_counts': span_start_counts,
-        'span_transition_counts': span_transition_counts,
-        'instance_count': instance_count,
-    }
 
 
 def sliding_sum(inputs, k):
@@ -95,6 +35,16 @@ def sliding_sum(inputs, k):
     return ret
 
 
+class ResidualLayer(nn.Module):
+    def __init__(self, in_dim=100, out_dim=100):
+        super(ResidualLayer, self).__init__()
+        self.lin1 = nn.Linear(in_dim, out_dim)
+        self.lin2 = nn.Linear(out_dim, out_dim)
+
+    def forward(self, x):
+        return F.relu(self.lin2(F.relu(self.lin1(x)))) + x
+
+
 class SemiMarkovModule(nn.Module):
     @classmethod
     def add_args(cls, parser):
@@ -105,13 +55,23 @@ class SemiMarkovModule(nn.Module):
                             choices=['closed-form', 'gradient-based', 'closed-then-gradient'],
                             default='closed-form')
 
+        # parser.add_argument('--sm_projection_dim', type=int)
+        parser.add_argument('--sm_feature_projection', action='store_true', help='use a flow')
+        NICETrans.add_args(parser)
+
     def __init__(self, args, n_classes, n_dims, allow_self_transitions=False, learn_transitions=True):
         super(SemiMarkovModule, self).__init__()
         self.args = args
         self.n_classes = n_classes
+        self.input_feature_dim = n_dims
+        # if self.args.sm_feature_projection:
+        #     self.feature_dim = self.args.sm_projection_dim or n_dims
+        # else:
+        #     self.feature_dim = n_dims
         self.feature_dim = n_dims
         self.allow_self_transitions = allow_self_transitions
         self.init_params()
+        self.init_projector()
         self.max_k = args.sm_max_span_length
         self._learn_transitions = learn_transitions
 
@@ -123,6 +83,17 @@ class SemiMarkovModule(nn.Module):
         except:
             self._learn_transitions = True
             return self._learn_transitions
+
+    def init_projector(self):
+        if self.args.sm_feature_projection:
+            # self.feature_projector = nn.Sequential(
+            #     FeedForward(self.args,
+            #                 self.input_feature_dim,
+            #                 self.feature_dim),
+            # )
+            self.feature_projector = NICETrans(self.args, features=self.feature_dim)
+        else:
+            self.feature_projector = None
 
     def init_params(self):
         poisson_log_rates = torch.zeros(self.n_classes).float()
@@ -147,6 +118,9 @@ class SemiMarkovModule(nn.Module):
         pass
 
     def fit_supervised(self, feature_list, label_list):
+        if self.feature_projector is not None:
+            raise NotImplementedError("fit_supervised closed form with feature projector")
+
         emission_gmm, stats = semimarkov_sufficient_stats(
             feature_list, label_list,
             covariance_type='tied_diag',
@@ -189,6 +163,8 @@ class SemiMarkovModule(nn.Module):
 
     def initialize_gaussian_from_feature_list(self, features):
         feats = torch.cat(features, dim=0)
+        if self.feature_projector:
+            feats, jacobian = self.feature_projector(feats)
         assert feats.dim() == 2
         n_dim = feats.size(1)
         assert n_dim == self.feature_dim
@@ -260,11 +236,11 @@ class SemiMarkovModule(nn.Module):
         log_probs = []
         for c in range(num_classes):
             # b x d
-            this_means = class_means[:,c,:]
+            this_means = class_means[:, c, :]
             dist = MultivariateNormal(loc=this_means, scale_tril=scale_tril)
             #  features.transpose(0,1): N x b x d
             log_probs.append(
-                dist.log_prob(features.transpose(0,1)).transpose(0,1).unsqueeze(-1) # b x N x 1
+                dist.log_prob(features.transpose(0, 1)).transpose(0, 1).unsqueeze(-1)  # b x N x 1
             )
         return torch.cat(log_probs, dim=2)
 
@@ -285,7 +261,7 @@ class SemiMarkovModule(nn.Module):
         poissons = Poisson(torch.exp(log_rates))
         if log_rates.dim() == 2:
             time_steps = time_steps.unsqueeze(1).expand(max_length, log_rates.size(0), n_classes)
-            return poissons.log_prob(time_steps).transpose(0,1)
+            return poissons.log_prob(time_steps).transpose(0, 1)
         else:
             assert log_rates.dim() == 1
             return poissons.log_prob(time_steps)
@@ -299,66 +275,6 @@ class SemiMarkovModule(nn.Module):
             n_classes = len(valid_classes)
         log_rates = self.poisson_log_rates[class_indices]
         return self._length_log_probs_with_rates(log_rates)
-
-    @staticmethod
-    def labels_to_spans(position_labels, max_k):
-        # position_labels: b x N, LongTensor
-        assert not (position_labels == -1).any(), "position_labels already appear span encoded (have -1)"
-        b, N = position_labels.size()
-        last = position_labels[:, 0]
-        values = [last.unsqueeze(1)]
-        lengths = torch.ones_like(last)
-        for n in range(1, N):
-            this = position_labels[:, n]
-            same_symbol = (last == this)
-            if max_k is not None:
-                same_symbol = same_symbol & (lengths < max_k - 1)
-            encoded = torch.where(same_symbol, torch.full([1], -1, device=same_symbol.device, dtype=torch.long), this)
-            lengths = torch.where(same_symbol, lengths, torch.full([1], 0, device=same_symbol.device, dtype=torch.long))
-            lengths += 1
-            values.append(encoded.unsqueeze(1))
-            last = this
-        return torch.cat(values, dim=1)
-
-    @staticmethod
-    def rle_spans(spans, lengths):
-        b, T = spans.size()
-        all_rle = []
-        for i in range(b):
-            this_rle = []
-            this_spans = spans[i, :lengths[i]]
-            current_symbol = None
-            count = 0
-            for symbol in this_spans:
-                symbol = symbol.item()
-                if current_symbol is None or symbol != -1:
-                    if current_symbol is not None:
-                        assert count > 0
-                        this_rle.append((current_symbol, count))
-                    count = 0
-                    current_symbol = symbol
-                count += 1
-            if current_symbol is not None:
-                assert count > 0
-                this_rle.append((current_symbol, count))
-            assert sum(count for sym, count in this_rle) == lengths[i]
-            all_rle.append(this_rle)
-        return all_rle
-
-    @staticmethod
-    def spans_to_labels(spans):
-        # spans: b x N, LongTensor
-        # contains 0.. for the start of a span (B-*), and -1 for its continuation (I-*)
-        b, N = spans.size()
-        current_labels = spans[:, 0]
-        assert (current_labels != -1).all()
-        values = [current_labels.unsqueeze(1)]
-        for n in range(1, N):
-            this = spans[:, n]
-            this_labels = torch.where(this == -1, current_labels, this)
-            values.append(this_labels.unsqueeze(1))
-            current_labels = this_labels
-        return torch.cat(values, dim=1)
 
     @staticmethod
     def log_hsmm(transition, emission_scores, init, length_scores, lengths, add_eos, all_batched=False):
@@ -480,15 +396,20 @@ class SemiMarkovModule(nn.Module):
 
     def set_z(self, features, lengths, use_mean=False):
         # will be overridden by child
-        self.kl = Variable(torch.zeros(features.size(0)), requires_grad=True)
+        self.kl = Variable(torch.zeros(features.size(0)).to(features.device), requires_grad=True)
 
     def score_features(self, features, lengths, valid_classes, add_eos, use_mean_z):
         # assert all_equal(lengths), "varied length scoring isn't implemented"
         # TODO: make this functional
         self.set_z(features, lengths, use_mean=use_mean_z)
+
+        if self.feature_projector is not None:
+            projected_features, jacobian = self.feature_projector(features)
+        else:
+            projected_features = features
         return self.log_hsmm(
             self.transition_log_probs(valid_classes),
-            self.emission_log_probs(features, valid_classes),
+            self.emission_log_probs(projected_features, valid_classes),
             self.initial_log_probs(valid_classes),
             self.length_log_probs(valid_classes),
             lengths,
@@ -584,16 +505,6 @@ class SemiMarkovModule(nn.Module):
             # unmap
             pred_spans_unmap.apply_(lambda x: mapping[x])
         return pred_spans_unmap
-
-
-class ResidualLayer(nn.Module):
-    def __init__(self, in_dim=100, out_dim=100):
-        super(ResidualLayer, self).__init__()
-        self.lin1 = nn.Linear(in_dim, out_dim)
-        self.lin2 = nn.Linear(out_dim, out_dim)
-
-    def forward(self, x):
-        return F.relu(self.lin2(F.relu(self.lin1(x)))) + x
 
 
 class ComponentSemiMarkovModule(SemiMarkovModule):

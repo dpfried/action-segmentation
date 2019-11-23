@@ -79,7 +79,7 @@ class SequentialCanonicalBaseline(Model):
         step_duration = num_nonbackground_frames // len(nonbackground_indices)
         assert step_duration >= 1
 
-        if self.remove_background:
+        if self.remove_background or num_background_frames == 0:
             background_duration = 0
             pad = nonbackground_indices[-1]
         else:

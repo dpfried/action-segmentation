@@ -6,6 +6,7 @@ import torch
 from data.corpus import Datasplit
 from models.model import Model, make_optimizer, make_data_loader
 from models.semimarkov.semimarkov_modules import SemiMarkovModule, ComponentSemiMarkovModule
+from models.semimarkov import semimarkov_utils
 
 
 class SemiMarkovModel(Model):
@@ -129,7 +130,7 @@ class SemiMarkovModel(Model):
                     labels = batch['gt_single']
                     if self.args.cuda:
                         labels = labels.cuda()
-                    spans = SemiMarkovModule.labels_to_spans(labels, max_k=K)
+                    spans = semimarkov_utils.labels_to_spans(labels, max_k=K)
                     use_mean_z = True
                 else:
                     spans = None
@@ -181,7 +182,7 @@ class SemiMarkovModel(Model):
             train_loss = np.mean(losses)
             if scheduler is not None:
                 scheduler.step(train_loss)
-            callback_fn(epoch, {'train_loss_vid_avg': train_loss,
+            callback_fn(epoch, {'train_loss': train_loss,
                                 'train_nll_frame_avg': train_nll / num_frames,
                                 'train_kl_vid_avg': train_kl / num_videos,
                                 'train_recon_bound': (train_kl + train_kl) / num_frames})
@@ -210,7 +211,7 @@ class SemiMarkovModel(Model):
             videos = batch['video_name']
             # TODO: figure out under which eval conditions use_mean_z should be False
             pred_spans = self.model.viterbi(features, lengths, task_indices, add_eos=True, use_mean_z=True)
-            pred_labels = SemiMarkovModule.spans_to_labels(pred_spans)
+            pred_labels = semimarkov_utils.spans_to_labels(pred_spans)
             pred_labels_trim_s = self.model.trim(pred_labels, lengths, check_eos=True)
 
             # assert len(pred_labels_trim_s) == 1, "batch size should be 1"

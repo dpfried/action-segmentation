@@ -5,7 +5,7 @@ import torch.nn as nn
 from models.model import Model, make_optimizer, make_data_loader
 from utils.utils import all_equal
 
-from models.semimarkov.semimarkov_modules import semimarkov_sufficient_stats
+from models.semimarkov.semimarkov_utils import semimarkov_sufficient_stats
 
 from collections import Counter
 
