@@ -68,14 +68,17 @@ def test(args, model: Model, test_data: Datasplit, test_data_name: str, verbose=
         optimal_assignment = False
     else:
         assert args.training == 'unsupervised'
-        optimal_assignment = True
+        # if we're constraining the transitions to be the canonical order in the semimarkov, we don't need oracle reassignment
+        optimal_assignment = not (args.classifier == 'semimarkov' and args.sm_constrain_transitions)
     predictions_by_video = model.predict(test_data)
     prediction_function = lambda video: predictions_by_video[video.name]
-    stats = test_data.accuracy_corpus(optimal_assignment,
-                                      prediction_function,
-                                      prefix=test_data_name,
-                                      verbose=verbose,
-                                      compare_to_folder=args.compare_to_prediction_folder)
+    stats = test_data.accuracy_corpus(
+        optimal_assignment,
+        prediction_function,
+        prefix=test_data_name,
+        verbose=verbose,
+        compare_to_folder=args.compare_to_prediction_folder if not test_data_name.startswith('train') else None
+    )
     return stats
 
 

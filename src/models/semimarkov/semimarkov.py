@@ -1,6 +1,7 @@
 import copy
 import numpy as np
 import tqdm
+import itertools
 
 import torch
 from data.corpus import Datasplit
@@ -16,12 +17,32 @@ class SemiMarkovModel(Model):
         ComponentSemiMarkovModule.add_args(parser)
         parser.add_argument('--sm_component_model', action='store_true')
 
+        parser.add_argument('--sm_constrain_transitions', action='store_true')
+
     @classmethod
     def from_args(cls, args, train_data):
         n_classes = train_data.corpus.n_classes
         feature_dim = train_data.feature_dim
 
+        allow_self_transitions = True
+
         assert args.sm_max_span_length is not None
+        if args.sm_constrain_transitions:
+            assert args.task_specific_steps, "will get bad results with --sm_constrain_transitions if you don't also pass --task_specific_steps, because of multiple exits"
+            # if not args.remove_background:
+            #     raise NotImplementedError("--sm_constrain_transitions without --remove_background ")
+
+            (
+                allowed_starts, allowed_transitions, allowed_ends, ordered_indices_by_task
+            ) = train_data.get_allowed_starts_and_transitions()
+            if allow_self_transitions:
+                for src in range(n_classes):
+                    if src not in allowed_transitions:
+                        allowed_transitions[src] = set()
+                    allowed_transitions[src].add(src)
+        else:
+            allowed_starts, allowed_transitions, allowed_ends, ordered_indices_by_task = None, None, None, None
+
         if args.sm_component_model:
             if args.sm_component_decompose_steps:
                 # assert not args.task_specific_steps, "can't decompose steps unless steps are across tasks; you should remove --task_specific_steps"
@@ -33,29 +54,41 @@ class SemiMarkovModel(Model):
                     cls: {cls}
                     for cls in range(n_classes)
                 }
-            model = ComponentSemiMarkovModule(args,
-                                              n_classes,
-                                              n_components=n_components,
-                                              class_to_components=class_to_components,
-                                              feature_dim=feature_dim,
-                                              allow_self_transitions=True)
+            model = ComponentSemiMarkovModule(
+                args,
+                n_classes,
+                n_components=n_components,
+                class_to_components=class_to_components,
+                feature_dim=feature_dim,
+                allow_self_transitions=allow_self_transitions,
+                allowed_starts=allowed_starts,
+                allowed_transitions=allowed_transitions,
+                allowed_ends=allowed_ends,
+            )
         else:
-            model = SemiMarkovModule(args,
-                                     n_classes,
-                                     feature_dim,
-                                     allow_self_transitions=True)
-        return SemiMarkovModel(args, n_classes, feature_dim, model)
+            model = SemiMarkovModule(
+                args,
+                n_classes,
+                feature_dim,
+                allow_self_transitions=allow_self_transitions,
+                allowed_starts=allowed_starts,
+                allowed_transitions=allowed_transitions,
+                allowed_ends=allowed_ends,
+            )
+        return SemiMarkovModel(args, n_classes, feature_dim, model, ordered_indices_by_task)
 
-    def __init__(self, args, n_classes, feature_dim, model):
+    def __init__(self, args, n_classes, feature_dim, model, ordered_indices_by_task=None):
         self.args = args
         self.n_classes = n_classes
         self.feature_dim = feature_dim
         self.model = model
+        self.ordered_indices_by_task = ordered_indices_by_task
         if args.cuda:
             self.model.cuda()
 
     def fit_supervised(self, train_data: Datasplit):
         assert not self.args.sm_component_model
+        assert not self.args.sm_constrain_transitions
         loader = make_data_loader(self.args, train_data, batch_by_task=False, shuffle=False, batch_size=1)
         features, labels = [], []
         for batch in loader:
@@ -63,9 +96,25 @@ class SemiMarkovModel(Model):
             labels.append(batch['gt_single'].squeeze(0))
         self.model.fit_supervised(features, labels)
 
+    def make_additional_allowed_ends(self, tasks, lengths):
+        if self.ordered_indices_by_task is not None:
+            addl_allowed_ends = []
+            for task, length in zip(tasks, lengths):
+                ord_indices = self.ordered_indices_by_task[task]
+                if length.item() < len(ord_indices):
+                    this_allowed_ends = [ord_indices[length.item()-1]]
+                else:
+                    this_allowed_ends = []
+                addl_allowed_ends.append(this_allowed_ends)
+        else:
+            addl_allowed_ends = None
+        return addl_allowed_ends
+
     def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
         self.model.train()
         self.model.flatten_parameters()
+        if use_labels:
+            assert not self.args.sm_constrain_transitions
         initialize = True
         if use_labels and self.args.sm_supervised_method in ['closed-form', 'closed-then-gradient']:
             self.fit_supervised(train_data)
@@ -136,12 +185,15 @@ class SemiMarkovModel(Model):
                     spans = None
                     use_mean_z = False
 
+                addl_allowed_ends = self.make_additional_allowed_ends(tasks, lengths)
+
                 nll = -self.model.log_likelihood(features,
                                                  lengths,
                                                  valid_classes_per_instance=task_indices,
                                                  spans=spans,
                                                  add_eos=True,
-                                                 use_mean_z=use_mean_z)
+                                                 use_mean_z=use_mean_z,
+                                                 additional_allowed_ends_per_instance=addl_allowed_ends)
                 kl = self.model.kl.mean()
                 if use_labels:
                     this_loss = nll
@@ -162,9 +214,10 @@ class SemiMarkovModel(Model):
                     multi_batch_losses = []
 
                     if self.args.print_every and (batch_ix % self.args.print_every == 0):
-                        param_norm = sum([p.norm()**2 for p in self.model.parameters()]).item()**0.5
+                        param_norm = sum([p.norm()**2 for p in self.model.parameters()
+                                          if p.requires_grad]).item()**0.5
                         gparam_norm = sum([p.grad.norm()**2 for p in self.model.parameters()
-                                           if p.grad is not None]).item()**0.5
+                                           if p.requires_grad and p.grad is not None]).item()**0.5
                         log_str = 'Epoch: %02d, Batch: %03d/%03d, |Param|: %.6f, |GParam|: %.2f, lr: %.2E, ' + \
                                   'loss: %.4f, recon: %.4f, kl: %.4f, recon_bound: %.2f'
                         tqdm.tqdm.write(log_str %
@@ -209,9 +262,35 @@ class SemiMarkovModel(Model):
                 lengths = lengths.cuda()
 
             videos = batch['video_name']
+            tasks = batch['task_name']
+            assert len(set(tasks)) == 1
+            task = next(iter(tasks))
+
+            addl_allowed_ends = self.make_additional_allowed_ends(tasks, lengths)
+
             # TODO: figure out under which eval conditions use_mean_z should be False
-            pred_spans = self.model.viterbi(features, lengths, task_indices, add_eos=True, use_mean_z=True)
+            pred_spans = self.model.viterbi(features, lengths, task_indices, add_eos=True, use_mean_z=True,
+                                            additional_allowed_ends_per_instance=addl_allowed_ends)
             pred_labels = semimarkov_utils.spans_to_labels(pred_spans)
+
+            if self.args.sm_constrain_transitions:
+                all_pred_span_indices = [
+                    [ix for ix, count in this_rle_spans]
+                    for this_rle_spans in semimarkov_utils.rle_spans(pred_spans, lengths)
+                ]
+                for i, indices in enumerate(all_pred_span_indices):
+                    remove_cons_dups = [ix for ix, group in itertools.groupby(indices)
+                                        if not ix in test_data.corpus._background_indices]
+                    non_bg_indices = [
+                        ix for ix in test_data.corpus.indices_by_task(task)
+                        if ix not in test_data.corpus._background_indices
+                    ]
+                    if len(remove_cons_dups) != len(non_bg_indices) and lengths[i].item() != len(remove_cons_dups):
+                        print("deduped: {}, indices: {}, length {}".format(
+                            remove_cons_dups, non_bg_indices, lengths[i].item()
+                        ))
+                        # assert lengths[i].item() < len(non_bg_indices)
+
             pred_labels_trim_s = self.model.trim(pred_labels, lengths, check_eos=True)
 
             # assert len(pred_labels_trim_s) == 1, "batch size should be 1"

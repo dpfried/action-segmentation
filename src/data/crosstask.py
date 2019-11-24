@@ -257,6 +257,30 @@ class CrosstaskDatasplit(Datasplit):
                     features_contain_background=self._corpus._features_contain_background,
                 )
 
+    def get_allowed_starts_and_transitions(self):
+        if not self.remove_background:
+            raise NotImplementedError("allowed_starts_and_transitions without --remove_background isn't implemented")
+
+        allowed_starts = set()
+        allowed_transitions = {}
+        allowed_ends = set()
+
+        ordered_indices_by_task = {}
+
+        for task in self._corpus._all_tasks:
+            indices = [
+                self._corpus._index(self._corpus.get_label(task.index, step))
+                for step in task.steps
+            ]
+            allowed_starts.add(indices[0])
+            allowed_ends.add(indices[-1])
+            for src, tgt in zip(indices, indices[1:]):
+                if src not in allowed_transitions:
+                    allowed_transitions[src] = set()
+                allowed_transitions[src].add(tgt)
+            ordered_indices_by_task[task.index] = indices
+        return allowed_starts, allowed_transitions, allowed_ends, ordered_indices_by_task
+
 
 class CrosstaskCorpus(Corpus):
     TASK_SET_PATHS = {
@@ -330,6 +354,7 @@ class CrosstaskCorpus(Corpus):
     def get_datasplit(self, remove_background, task_sets=None, split='train', task_ids=None, full=True, subsample=1, feature_downscale=1.0):
         return CrosstaskDatasplit(self, remove_background, task_sets=task_sets, split=split, task_ids=task_ids,
                                   full=full, subsample=subsample, feature_downscale=feature_downscale)
+
 
 class CrosstaskGroundTruth(GroundTruth):
 

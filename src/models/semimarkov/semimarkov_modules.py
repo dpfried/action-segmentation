@@ -17,7 +17,7 @@ from utils.utils import all_equal
 from models.semimarkov.semimarkov_utils import semimarkov_sufficient_stats
 
 BIG_NEG = -1e9
-
+# BIG_NEG = -1e30
 
 def sliding_sum(inputs, k):
     # inputs: b x T x c
@@ -59,7 +59,11 @@ class SemiMarkovModule(nn.Module):
         parser.add_argument('--sm_feature_projection', action='store_true', help='use a flow')
         NICETrans.add_args(parser)
 
-    def __init__(self, args, n_classes, n_dims, allow_self_transitions=False, learn_transitions=True):
+    def __init__(self, args, n_classes, n_dims,
+                 allow_self_transitions=False,
+                 allowed_starts: Set[int] = None,
+                 allowed_transitions: Dict[int, Set[int]] = None,
+                 allowed_ends: Set[int] = None):
         super(SemiMarkovModule, self).__init__()
         self.args = args
         self.n_classes = n_classes
@@ -72,17 +76,22 @@ class SemiMarkovModule(nn.Module):
         self.allow_self_transitions = allow_self_transitions
         self.init_params()
         self.init_projector()
+        if allowed_starts is not None:
+            assert allowed_transitions is not None
+            self.set_transition_constraints(allowed_starts, allowed_transitions, allowed_ends)
+        else:
+            self.remove_transition_constraints()
         self.max_k = args.sm_max_span_length
-        self._learn_transitions = learn_transitions
+        # self._learn_transitions = learn_transitions
 
-    @property
-    def learn_transitions(self):
-        # backward compat for unpickling existing models
-        try:
-            return self._learn_transitions
-        except:
-            self._learn_transitions = True
-            return self._learn_transitions
+    # @property
+    # def learn_transitions(self):
+    #     # backward compat for unpickling existing models
+    #     try:
+    #         return self._learn_transitions
+    #     except:
+    #         self._learn_transitions = True
+    #         return self._learn_transitions
 
     def init_projector(self):
         if self.args.sm_feature_projection:
@@ -108,18 +117,52 @@ class SemiMarkovModule(nn.Module):
 
         # target x source
         transition_logits = torch.zeros(self.n_classes, self.n_classes).float()
-        self.transition_logits = nn.Parameter(transition_logits, requires_grad=self.learn_transitions)
+        self.transition_logits = nn.Parameter(transition_logits, requires_grad=True)
 
         init_logits = torch.zeros(self.n_classes).float()
-        self.init_logits = nn.Parameter(init_logits, requires_grad=self.learn_transitions)
+        self.init_logits = nn.Parameter(init_logits, requires_grad=True)
         torch.nn.init.uniform_(self.init_logits, 0, 1)
 
     def flatten_parameters(self):
         pass
 
+    def remove_transition_constraints(self):
+        self.transition_constraints = None
+        self.init_constraints = None
+        self.allowed_ends = None
+
+    def set_transition_constraints(
+            self,
+            allowed_starts: Set[int],
+            allowed_transitions: Dict[int, Set[int]],
+            allowed_ends: Set[int]
+    ):
+        # make it a parameter so that it can get moved to cuda
+        self.init_constraints = nn.Parameter(
+            torch.full((self.n_classes,), 1, dtype=torch.bool),
+            requires_grad=False
+        )
+        assert all(x >= 0 for x in allowed_starts)
+        self.init_constraints[torch.LongTensor(list(sorted(allowed_starts)))] = 0
+
+        # make it a parameter so that it can get moved to cuda
+        self.transition_constraints = nn.Parameter(
+            torch.full((self.n_classes, self.n_classes), 1, dtype=torch.bool),
+            requires_grad=False
+        )
+        # TODO: consider vectorizing this. but it's probably fine if we only call once and allowed_transitions is sparse
+        for src, targets in allowed_transitions.items():
+            for tgt in targets:
+                self.transition_constraints[tgt,src] = 0
+
+        self.allowed_ends = allowed_ends
+
     def fit_supervised(self, feature_list, label_list):
         if self.feature_projector is not None:
             raise NotImplementedError("fit_supervised closed form with feature projector")
+
+        if self.transition_constraints is not None or self.init_constraints is not None:
+            raise NotImplementedError("fit_supervised closed form with constrained state transitions")
 
         emission_gmm, stats = semimarkov_sufficient_stats(
             feature_list, label_list,
@@ -184,12 +227,16 @@ class SemiMarkovModule(nn.Module):
 
     def initial_log_probs(self, valid_classes):
         logits = self.init_logits
+        if self.init_constraints is not None:
+            logits = logits.masked_fill(self.init_constraints, BIG_NEG)
         if valid_classes is not None:
             logits = logits[valid_classes]
         return F.log_softmax(logits, dim=0)
 
     def transition_log_probs(self, valid_classes):
         transition_logits = self.transition_logits
+        if self.transition_constraints is not None:
+            transition_logits = transition_logits.masked_fill(self.transition_constraints, BIG_NEG)
         if valid_classes is not None:
             transition_logits = transition_logits[valid_classes][:, valid_classes]
             n_classes = len(valid_classes)
@@ -199,7 +246,9 @@ class SemiMarkovModule(nn.Module):
             masked = transition_logits
         else:
             masked = transition_logits.masked_fill(
-                torch.eye(n_classes, device=self.transition_logits.device).bool(), BIG_NEG)
+                torch.eye(n_classes, device=self.transition_logits.device).bool(),
+                BIG_NEG
+            )
         # transition_logits are indexed: to_state, from_state
         # so each column should be normalized (in log-space)
         return F.log_softmax(masked, dim=0)
@@ -277,7 +326,8 @@ class SemiMarkovModule(nn.Module):
         return self._length_log_probs_with_rates(log_rates)
 
     @staticmethod
-    def log_hsmm(transition, emission_scores, init, length_scores, lengths, add_eos, all_batched=False):
+    def log_hsmm(transition, emission_scores, init, length_scores, lengths, add_eos,
+                 all_batched=False, allowed_ends_per_instance=None):
         """
         Convert HSMM to a linear chain.
         Parameters (if all_batched = True):
@@ -323,16 +373,22 @@ class SemiMarkovModule(nn.Module):
         if add_eos:
             transition_augmented = torch.full((b, C, C), BIG_NEG, device=transition.device)
             transition_augmented[:, :C_1, :C_1] = transition
-            # can transition from anything to EOS
-            transition_augmented[:, C_1, :] = 0
+            if allowed_ends_per_instance is None:
+                # can transition from anything to EOS
+                transition_augmented[:, C_1, :] = 0
+            else:
+                # can transition from any of allowed_ends to EOS
+                for i, allowed_ends in enumerate(allowed_ends_per_instance):
+                    assert len(allowed_ends) > 0
+                    transition_augmented[i, C_1, allowed_ends] = 0
 
             init_augmented = torch.full((b, C), BIG_NEG, device=init.device)
             init_augmented[:, :C_1] = init
 
-            length_augmented = torch.full((b, K, C), BIG_NEG, device=length_scores.device)
-            length_augmented[:, :, :C_1] = length_scores
+            length_scores_augmented = torch.full((b, K, C), BIG_NEG, device=length_scores.device)
+            length_scores_augmented[:, :, :C_1] = length_scores
             # EOS must be length 1, although I don't think this is checked in the dp
-            length_augmented[:, 1, C_1] = 0
+            length_scores_augmented[:, 1, C_1] = 0
 
             emission_augmented = torch.full((b, N, C), BIG_NEG, device=emission_scores.device)
             for i, length in enumerate(lengths):
@@ -343,20 +399,24 @@ class SemiMarkovModule(nn.Module):
             # emission_augmented[:, lengths, C_1] = 0
             # emission_augmented[:, N_1, C_1] = 0
 
+            lengths_augmented = lengths + 1
+
         else:
             transition_augmented = transition
 
             init_augmented = init
 
-            length_augmented = length_scores
+            length_scores_augmented = length_scores
 
             emission_augmented = emission_scores
+
+            lengths_augmented = lengths
 
         scores = torch.zeros(b, N - 1, K, C, C, device=emission_scores.device).type_as(emission_scores)
         scores[:, :, :, :, :] += transition_augmented.view(b, 1, 1, C, C)
         # transition scores should include prior scores at first time step
         scores[:, 0, :, :, :] += init_augmented.view(b, 1, 1, C)
-        scores[:, :, :, :, :] += length_augmented.view(b, 1, K, 1, C)
+        scores[:, :, :, :, :] += length_scores_augmented.view(b, 1, K, 1, C)
         # add emission scores
         # TODO: progressive adding
         for k in range(1, K):
@@ -364,7 +424,7 @@ class SemiMarkovModule(nn.Module):
             # scores[:, N - 1 - k, k, :, :] += emission_augmented[:, N - 1].view(b, C, 1)
             summed = sliding_sum(emission_augmented, k).view(b, N, 1, C)
             for i in range(b):
-                length = lengths[i]
+                length = lengths_augmented[i]
                 scores[i, :length - 1, k, :, :] += summed[i, :length - 1]
                 scores[i, length - 1 - k, k, :, :] += emission_augmented[i, length - 1].view(C, 1)
 
@@ -398,7 +458,8 @@ class SemiMarkovModule(nn.Module):
         # will be overridden by child
         self.kl = Variable(torch.zeros(features.size(0)).to(features.device), requires_grad=True)
 
-    def score_features(self, features, lengths, valid_classes, add_eos, use_mean_z):
+    def score_features(self, features, lengths, valid_classes, add_eos, use_mean_z,
+                       additional_allowed_ends_per_instance=None):
         # assert all_equal(lengths), "varied length scoring isn't implemented"
         # TODO: make this functional
         self.set_z(features, lengths, use_mean=use_mean_z)
@@ -407,6 +468,20 @@ class SemiMarkovModule(nn.Module):
             projected_features, jacobian = self.feature_projector(features)
         else:
             projected_features = features
+
+        if self.allowed_ends is not None:
+            # TODO: ugh
+            if additional_allowed_ends_per_instance is None:
+                additional_allowed_ends_per_instance = [set() for _ in features.size(0)]
+            allowed_ends_per_instance = [
+                [i for i, ix in enumerate(valid_classes)
+                 if ix.item() in (set(self.allowed_ends) | set(additional_allowed_ends))]
+                for additional_allowed_ends in additional_allowed_ends_per_instance
+            ]
+            assert all(allowed_ends_per_instance), allowed_ends_per_instance
+        else:
+            allowed_ends_per_instance = None
+
         return self.log_hsmm(
             self.transition_log_probs(valid_classes),
             self.emission_log_probs(projected_features, valid_classes),
@@ -415,9 +490,11 @@ class SemiMarkovModule(nn.Module):
             lengths,
             add_eos=add_eos,
             all_batched=self.batched_scores,
+            allowed_ends_per_instance=allowed_ends_per_instance,
         )
 
-    def log_likelihood(self, features, lengths, valid_classes_per_instance, spans=None, add_eos=True, use_mean_z=False):
+    def log_likelihood(self, features, lengths, valid_classes_per_instance, spans=None, add_eos=True, use_mean_z=False,
+                       additional_allowed_ends_per_instance=None):
         if valid_classes_per_instance is not None:
             assert all_equal(set(vc.detach().cpu().numpy()) for vc in
                              valid_classes_per_instance), "must have same valid_classes for all instances in the batch"
@@ -427,7 +504,8 @@ class SemiMarkovModule(nn.Module):
             valid_classes = None
             C = self.n_classes
 
-        scores = self.score_features(features, lengths, valid_classes, add_eos=add_eos, use_mean_z=use_mean_z)
+        scores = self.score_features(features, lengths, valid_classes, add_eos=add_eos, use_mean_z=use_mean_z,
+                                     additional_allowed_ends_per_instance=additional_allowed_ends_per_instance)
 
         K = scores.size(2)
         assert K <= self.max_k
@@ -475,7 +553,8 @@ class SemiMarkovModule(nn.Module):
             log_likelihood = dist.partition.mean()
         return log_likelihood
 
-    def viterbi(self, features, lengths, valid_classes_per_instance, add_eos=True, use_mean_z=False):
+    def viterbi(self, features, lengths, valid_classes_per_instance, add_eos=True, use_mean_z=False,
+                additional_allowed_ends_per_instance=None):
         if valid_classes_per_instance is not None:
             assert all_equal(set(vc.detach().cpu().numpy()) for vc in
                              valid_classes_per_instance), "must have same valid_classes for all instances in the batch"
@@ -484,7 +563,8 @@ class SemiMarkovModule(nn.Module):
         else:
             valid_classes = None
             C = self.n_classes
-        scores = self.score_features(features, lengths, valid_classes, add_eos=add_eos, use_mean_z=use_mean_z)
+        scores = self.score_features(features, lengths, valid_classes, add_eos=add_eos, use_mean_z=use_mean_z,
+                                     additional_allowed_ends_per_instance=additional_allowed_ends_per_instance)
         if add_eos:
             eos_lengths = lengths + 1
         else:
@@ -528,7 +608,10 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
                  class_to_components: Dict[int, Set[int]],
                  feature_dim: int,
                  allow_self_transitions=False,
-                 per_class_bias=True):
+                 per_class_bias=True,
+                 allowed_starts: Set[int] = None,
+                 allowed_transitions: Dict[int, Set[int]] = None,
+                 allowed_ends: Set[int] = None):
         self.args = args
         self.n_components = n_components
         self.embedding_dim = self.args.sm_component_embedding_dim
@@ -554,7 +637,8 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         self.length_layers = self.args.sm_component_length_layers
         # self.use_separate_embeddings = self.args.sm_component_separate_embeddings
         self.use_separate_embeddings = True
-        super(ComponentSemiMarkovModule, self).__init__(args, n_classes, feature_dim, allow_self_transitions)
+        super(ComponentSemiMarkovModule, self).__init__(args, n_classes, feature_dim, allow_self_transitions,
+                                                        allowed_starts, allowed_transitions, allowed_ends)
 
     def init_params(self):
         # this initialization follows https://github.com/harvardnlp/compound-pcfg/blob/master/models.py
@@ -704,6 +788,11 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         )
         x = self.initial_weights(class_embeddings)
         x = x.squeeze(-1)
+        if self.init_constraints is not None:
+            constraints = self.init_constraints
+            if valid_classes is not None:
+                constraints = constraints[valid_classes]
+            x = x.masked_fill(constraints.unsqueeze(0).expand_as(x), BIG_NEG)
         if self.initial_bias is not None:
             x += self.initial_bias[valid_classes]
         return torch.log_softmax(x, dim=-1)
@@ -717,6 +806,11 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         )
         x = self.transition_weights(class_embeddings)
         x = torch.einsum("bfe,bte->btf", [x, class_embeddings])
+        if self.transition_constraints is not None:
+            constraints = self.transition_constraints
+            if valid_classes is not None:
+                constraints = constraints[valid_classes][:,valid_classes]
+            x = x.masked_fill(constraints.unsqueeze(0).expand_as(x), BIG_NEG)
         if self.transition_bias is not None:
             x += self.transition_bias[valid_classes].unsqueeze(0).unsqueeze(-1).expand_as(x)
         if not self.allow_self_transitions:

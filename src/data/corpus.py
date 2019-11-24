@@ -354,6 +354,9 @@ class Datasplit(Dataset):
     def _load_ground_truth_and_videos(self, remove_background):
         raise NotImplementedError("subclasses should implement _load_ground_truth")
 
+    def get_allowed_starts_and_transitions(self):
+        raise NotImplementedError("subclasses should implement get_allowed_starts_and_transitions")
+
     def accuracy_corpus(self, optimal_assignment: bool, prediction_function, prefix='', verbose=True,
                         compare_to_folder=None):
         """Calculate metrics as well with previous correspondences between
@@ -449,10 +452,10 @@ class Datasplit(Dataset):
                     compare_accuracy.add_gt_labels(gt)
                     compare_accuracy.add_predicted_labels(pred)
 
-            named_accuracies = [('this_run', accuracy)]
+            named_accuracies = [('model', accuracy)]
 
             if compare_to_folder is not None:
-                named_accuracies.append(('comparison', compare_accuracy))
+                named_accuracies.append(('comparison: {}'.format(compare_to_folder), compare_accuracy))
 
             for acc_name, acc in named_accuracies:
                 # if opt.bg:
@@ -462,8 +465,11 @@ class Datasplit(Dataset):
                 #     # enforce to SIL class assign nothing
                 #     acc.exclude[0] = [-1]
 
+                if verbose:
+                    logger.debug('Stats for {}'.format(acc_name))
+
                 total_fr = acc.mof(optimal_assignment, possible_gt_labels=self.corpus.indices_by_task(task))
-                if acc_name == 'this_run':
+                if acc_name == 'model':
                     self._gt2label = acc._gt2cluster
                     self._label2gt = {}
                     for key, val in self._gt2label.items():
@@ -481,6 +487,8 @@ class Datasplit(Dataset):
                 acc.iou_classes()
                 acc.levenshtein()
                 acc.single_step_recall()
+                if verbose:
+                    logger.debug('\n')
 
             self.return_stat = accuracy.stat()
 
@@ -500,6 +508,8 @@ class Datasplit(Dataset):
             stats = accuracy.stat()
             if compare_to_folder is not None:
                 comparison_stats = compare_accuracy.stat()
+                if verbose:
+                    logger.debug("\n")
                 stats['comparison_mof'] = comparison_stats['mof']
                 stats['comparison_mof_bg'] = comparison_stats['mof_bg']
                 stats['comparison_mof_non_bg'] = comparison_stats['mof_non_bg']

@@ -337,10 +337,11 @@ class Accuracy(object):
         max_num_segments = []
 
         assert len(self._predicted_labels_per_video) == len(self._gt_labels_per_video)
-        for gt_rle, pred_rle in zip(self._gt_rle_per_video, self._predicted_rle_per_video):
+        for ix, (gt_rle, pred_rle) in enumerate(zip(self._gt_rle_per_video, self._predicted_rle_per_video)):
             assert sum(length for _, length in gt_rle) == sum(length for _, length in pred_rle)
             gt_remapped_segments = [singleton_lookup(gt2cluster, label) for (label, length) in gt_rle]
             pred_segments = [label for (label, length) in pred_rle]
+            # self._logger.debug("{}: \n\tpred: {}\n\tgold:{}".format(ix, pred_segments, gt_remapped_segments))
             levenshteins.append(editdistance.eval(gt_remapped_segments, pred_segments))
             max_num_segments.append(max(len(gt_remapped_segments), len(pred_segments)))
 
