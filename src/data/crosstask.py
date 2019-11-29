@@ -299,7 +299,8 @@ class CrosstaskCorpus(Corpus):
     }
 
     def __init__(self, release_root, feature_root, dimensions_per_feature_group=None,
-                 features_contain_background=True, task_specific_steps=True, use_secondary=False):
+                 features_contain_background=True, task_specific_steps=True, use_secondary=False,
+                 annotate_background_with_previous=False):
         print("feature root: {}".format(feature_root))
 
         self._release_root = release_root
@@ -320,13 +321,28 @@ class CrosstaskCorpus(Corpus):
 
         self.task_specific_steps = task_specific_steps
 
-        self.BACKGROUND_LABELS_BY_TASK = {
-            task.index: self.get_label(task.index, "BKG")
-            for task in self._all_tasks
-        }
+        self.annotate_background_with_previous = annotate_background_with_previous
+
+        if annotate_background_with_previous:
+            assert task_specific_steps
+            self.BACKGROUND_LABELS_BY_TASK = {
+                task.index: [self.get_label(task.index, "BKG_{}".format(step))
+                             for step in ["FIRST"] + task.steps]
+                for task in self._all_tasks
+            }
+        else:
+            self.BACKGROUND_LABELS_BY_TASK = {
+                task.index: [self.get_label(task.index, "BKG")]
+                for task in self._all_tasks
+            }
 
         # if not self.task_specific_steps, BACKGROUND_LABELS_BY_TASK will map everything to BKG, so we need to deduplicate
-        self.BACKGROUND_LABELS = list(sorted(set(self.BACKGROUND_LABELS_BY_TASK.values())))
+
+        # self.BACKGROUND_LABELS = list(sorted(set(self.BACKGROUND_LABELS_BY_TASK.values())))
+        self.BACKGROUND_LABELS = list(sorted(set(
+            lbl for task_labels in self.BACKGROUND_LABELS_BY_TASK.values()
+            for lbl in task_labels
+        )))
 
         super(CrosstaskCorpus, self).__init__(background_labels=self.BACKGROUND_LABELS)
 
@@ -346,7 +362,7 @@ class CrosstaskCorpus(Corpus):
 
     def _load_mapping(self):
         for task in self._all_tasks:
-            indices = [self._index(self.BACKGROUND_LABELS_BY_TASK[task.index])]
+            indices = [self._index(lbl) for lbl in self.BACKGROUND_LABELS_BY_TASK[task.index]]
             indices += [self._index(self.get_label(task.index, step)) for step in task.steps]
             self.update_indices_by_task(task.index, indices)
 
@@ -387,13 +403,20 @@ class CrosstaskGroundTruth(GroundTruth):
             gt = read_assignment_list(T, num_steps, filename)
             # turn these step indices into global indices
             global_gt = []
+
+            previous_step_ix = 0
             for gt_t in gt:
                 new_gt_t = []
                 for ix in gt_t:
                     if ix == 0:
-                        label_idx = self._corpus.label2index[self._corpus.BACKGROUND_LABELS_BY_TASK[task]]
+                        if self._corpus.annotate_background_with_previous:
+                            label_idx = self._corpus.label2index[self._corpus.BACKGROUND_LABELS_BY_TASK[task][previous_step_ix]]
+                        else:
+                            assert len(self._corpus.BACKGROUND_LABELS_BY_TASK[task]) == 1
+                            label_idx = self._corpus.label2index[self._corpus.BACKGROUND_LABELS_BY_TASK[task][0]]
                     else:
                         label_idx = self._corpus._index(self._corpus.get_label(task, self._tasks_by_id[task].steps[ix - 1]))
+                        previous_step_ix = ix
                     new_gt_t.append(label_idx)
                 global_gt.append(new_gt_t)
             if task not in self.gt_by_task:

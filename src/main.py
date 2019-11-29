@@ -50,8 +50,8 @@ def add_data_args(parser):
 
     group.add_argument('--frame_subsample', type=int, default=1, help="interval to subsample frames at (e.g. 10 takes every 10th frame)")
 
-    group.add_argument('--task_specific_steps', action='store_true',
-                       help="")
+    group.add_argument('--task_specific_steps', action='store_true', help="")
+    group.add_argument('--annotate_background_with_previous', action='store_true', help="")
 
 
 def add_classifier_args(parser):
@@ -185,6 +185,7 @@ def make_data_splits(args):
             dimensions_per_feature_group=dimensions_per_feature_group,
             features_contain_background=features_contain_background,
             task_specific_steps=args.task_specific_steps,
+            annotate_background_with_previous=args.annotate_background_with_previous,
             use_secondary='related' in args.crosstask_training_data,
         )
         corpus._cache_features = True
@@ -217,6 +218,7 @@ def make_data_splits(args):
                     for split, full, task_sets in split_names_and_full
                 )
     elif args.dataset == 'breakfast':
+        assert not args.annotate_background_with_previous
         if args.features == 'pca':
             max_components = 64
             assert args.pca_components_per_group == max_components

@@ -273,23 +273,23 @@ class SemiMarkovModel(Model):
                                             additional_allowed_ends_per_instance=addl_allowed_ends)
             pred_labels = semimarkov_utils.spans_to_labels(pred_spans)
 
-            if self.args.sm_constrain_transitions:
-                all_pred_span_indices = [
-                    [ix for ix, count in this_rle_spans]
-                    for this_rle_spans in semimarkov_utils.rle_spans(pred_spans, lengths)
-                ]
-                for i, indices in enumerate(all_pred_span_indices):
-                    remove_cons_dups = [ix for ix, group in itertools.groupby(indices)
-                                        if not ix in test_data.corpus._background_indices]
-                    non_bg_indices = [
-                        ix for ix in test_data.corpus.indices_by_task(task)
-                        if ix not in test_data.corpus._background_indices
-                    ]
-                    if len(remove_cons_dups) != len(non_bg_indices) and lengths[i].item() != len(remove_cons_dups):
-                        print("deduped: {}, indices: {}, length {}".format(
-                            remove_cons_dups, non_bg_indices, lengths[i].item()
-                        ))
-                        # assert lengths[i].item() < len(non_bg_indices)
+            # if self.args.sm_constrain_transitions:
+            #     all_pred_span_indices = [
+            #         [ix for ix, count in this_rle_spans]
+            #         for this_rle_spans in semimarkov_utils.rle_spans(pred_spans, lengths)
+            #     ]
+            #     for i, indices in enumerate(all_pred_span_indices):
+            #         remove_cons_dups = [ix for ix, group in itertools.groupby(indices)
+            #                             if not ix in test_data.corpus._background_indices]
+            #         non_bg_indices = [
+            #             ix for ix in test_data.corpus.indices_by_task(task)
+            #             if ix not in test_data.corpus._background_indices
+            #         ]
+            #         if len(remove_cons_dups) != len(non_bg_indices) and lengths[i].item() != len(remove_cons_dups):
+            #             print("deduped: {}, indices: {}, length {}".format(
+            #                 remove_cons_dups, non_bg_indices, lengths[i].item()
+            #             ))
+            #             # assert lengths[i].item() < len(non_bg_indices)
 
             pred_labels_trim_s = self.model.trim(pred_labels, lengths, check_eos=True)
 
