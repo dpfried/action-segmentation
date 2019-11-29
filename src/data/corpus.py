@@ -357,6 +357,12 @@ class Datasplit(Dataset):
     def get_allowed_starts_and_transitions(self):
         raise NotImplementedError("subclasses should implement get_allowed_starts_and_transitions")
 
+    def canonicalize_background(self, index):
+        if index in self._corpus._background_indices:
+            return self._corpus._background_indices[0]
+        else:
+            return index
+
     def accuracy_corpus(self, optimal_assignment: bool, prediction_function, prefix='', verbose=True,
                         compare_to_folder=None):
         """Calculate metrics as well with previous correspondences between
@@ -411,6 +417,16 @@ class Datasplit(Dataset):
                     pred = list(np.array(pred + [pred[-1]]).repeat(self.subsample)[:len(gt)])
 
                     assert len(gt) == len(pred), "{} != {}".format(len(gt), len(pred))
+
+                if self.corpus.annotate_background_with_previous:
+                    gt = [
+                        [self.canonicalize_background(ix) for ix in gt_t]
+                        for gt_t in gt
+                    ]
+                    pred = [self.canonicalize_background(ix) for ix in pred]
+                    # print("gt: {}".format([gt_t[0] for gt_t in gt]))
+                    # print("pred: {}".format(pred))
+                    # print()
 
                 accuracy.add_gt_labels(gt)
                 accuracy.add_predicted_labels(pred)

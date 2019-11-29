@@ -53,6 +53,8 @@ def add_data_args(parser):
     group.add_argument('--task_specific_steps', action='store_true', help="")
     group.add_argument('--annotate_background_with_previous', action='store_true', help="")
 
+    group.add_argument('--no_merge_classes', action='store_true', help="")
+
 
 def add_classifier_args(parser):
     group = parser.add_argument_group('classifier')

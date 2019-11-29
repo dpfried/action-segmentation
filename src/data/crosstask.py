@@ -258,8 +258,6 @@ class CrosstaskDatasplit(Datasplit):
                 )
 
     def get_allowed_starts_and_transitions(self):
-        if not self.remove_background:
-            raise NotImplementedError("allowed_starts_and_transitions without --remove_background isn't implemented")
 
         allowed_starts = set()
         allowed_transitions = {}
@@ -268,17 +266,60 @@ class CrosstaskDatasplit(Datasplit):
         ordered_indices_by_task = {}
 
         for task in self._corpus._all_tasks:
-            indices = [
-                self._corpus._index(self._corpus.get_label(task.index, step))
-                for step in task.steps
-            ]
-            allowed_starts.add(indices[0])
-            allowed_ends.add(indices[-1])
-            for src, tgt in zip(indices, indices[1:]):
-                if src not in allowed_transitions:
-                    allowed_transitions[src] = set()
-                allowed_transitions[src].add(tgt)
-            ordered_indices_by_task[task.index] = indices
+            if self.remove_background:
+                indices = [
+                    self._corpus._index(self._corpus.get_label(task.index, step))
+                    for step in task.steps
+                ]
+
+                for src, tgt in zip(indices, indices[1:]):
+                    if src not in allowed_transitions:
+                        allowed_transitions[src] = set()
+                    allowed_transitions[src].add(tgt)
+
+                allowed_starts.add(indices[0])
+                allowed_ends.add(indices[-1])
+                ordered_indices_by_task[task.index] = indices
+            else:
+                step_indices = [
+                    self._corpus._index(self._corpus.get_label(task.index, step))
+                    for step in task.steps
+                ]
+                background_indices = [
+                    self._corpus._index(lbl)
+                    for lbl in self._corpus.BACKGROUND_LABELS_BY_TASK[task.index]
+                ]
+                assert len(background_indices) == len(step_indices) + 1
+                indices = []
+                for ix in range(len(step_indices)):
+                    indices.append(background_indices[ix])
+                    indices.append(step_indices[ix])
+                indices.append(background_indices[-1])
+                assert len(indices) == 2 * len(step_indices) + 1
+
+                STEP_TO_STEP = False
+
+                if STEP_TO_STEP:
+                    for i, step_ix in enumerate(step_indices):
+                        s = {background_indices[i+1]}
+                        if i < len(step_indices) - 1:
+                            s.add(step_indices[i+1])
+                        allowed_transitions[step_ix] = s
+
+                    for i, bg_ix in enumerate(background_indices[:-1]):
+                        s = {step_indices[i]}
+                        s.add(background_indices[i+1])
+                        allowed_transitions[bg_ix] = s
+                else:
+                    for src, tgt in zip(indices, indices[1:]):
+                        if src not in allowed_transitions:
+                            allowed_transitions[src] = set()
+                        allowed_transitions[src].add(tgt)
+
+                allowed_starts.add(indices[0])
+                allowed_ends.add(indices[-1])
+                ordered_indices_by_task[task.index] = indices
+
         return allowed_starts, allowed_transitions, allowed_ends, ordered_indices_by_task
 
 

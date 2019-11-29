@@ -19,6 +19,9 @@ from models.semimarkov.semimarkov_utils import semimarkov_sufficient_stats
 BIG_NEG = -1e9
 # BIG_NEG = -1e30
 
+# share all params between annotated background steps ?
+DEBUG_ANNOTATE = False
+
 def sliding_sum(inputs, k):
     # inputs: b x T x c
     # sums sliding windows along the T dim, of length k
@@ -181,6 +184,26 @@ class SemiMarkovModule(nn.Module):
             n_classes=self.n_classes,
             max_k=self.max_k,
         )
+        if self.merge_classes is not None:
+            label_list_merged = [
+                torch.LongTensor([self.merge_classes[ix.item()] for ix in labels]).to(labels.device)
+                for labels in label_list
+            ]
+            emission_gmm_merged, stats_merged = semimarkov_sufficient_stats(
+                feature_list, label_list_merged,
+                covariance_type='tied_diag',
+                n_classes=self.n_classes,
+                max_k=self.max_k,
+            )
+        else:
+            emission_gmm_merged, stats_merged = emission_gmm, stats
+
+
+        if DEBUG_ANNOTATE:
+            emission_gmm = emission_gmm_merged
+            stats = stats_merged
+
+        # transition probs use unmerged classes
         init_probs = (stats['span_start_counts'] + self.args.sm_supervised_state_smoothing) / float(
             stats['instance_count'] + self.args.sm_supervised_state_smoothing * self.n_classes)
         init_probs[np.isnan(init_probs)] = 0
@@ -197,18 +220,19 @@ class SemiMarkovModule(nn.Module):
         self.transition_logits.data.zero_()
         self.transition_logits.data.add_(torch.from_numpy(trans_probs).to(device=self.transition_logits.device).log())
 
-        mean_lengths = (stats['span_lengths'] + self.args.sm_supervised_length_smoothing) / (
-                stats['span_counts'] + self.args.sm_supervised_length_smoothing)
+        # lengths and emissions use merged classes
+        mean_lengths = (stats_merged['span_lengths'] + self.args.sm_supervised_length_smoothing) / (
+                stats_merged['span_counts'] + self.args.sm_supervised_length_smoothing)
         self.poisson_log_rates.data.zero_()
         self.poisson_log_rates.data.add_(torch.from_numpy(mean_lengths).to(device=self.poisson_log_rates.device).log())
 
         self.gaussian_means.data.zero_()
         self.gaussian_means.data.add_(
-            torch.from_numpy(emission_gmm.means_).to(device=self.gaussian_means.device).float())
+            torch.from_numpy(emission_gmm_merged.means_).to(device=self.gaussian_means.device).float())
 
         self.gaussian_cov.data.zero_()
         self.gaussian_cov.data.add_(
-            torch.diag(torch.from_numpy(emission_gmm.covariances_[0]).to(device=self.gaussian_cov.device).float()))
+            torch.diag(torch.from_numpy(emission_gmm_merged.covariances_[0]).to(device=self.gaussian_cov.device).float()))
 
     def _initialize_gaussian_means(self, mean):
         # self.gaussian_means.data = mean.expand((self.n_classes, self.n_dims))
@@ -240,6 +264,12 @@ class SemiMarkovModule(nn.Module):
         logits = self.init_logits
         if self.init_constraints is not None:
             logits = logits.masked_fill(self.init_constraints, BIG_NEG)
+
+        if DEBUG_ANNOTATE and self.merge_classes is not None and valid_classes is not None:
+            valid_classes = torch.LongTensor(
+                [self.merge_classes[ix.item()] for ix in valid_classes],
+            ).to(logits.device)
+
         if valid_classes is not None:
             logits = logits[valid_classes]
         return F.log_softmax(logits, dim=0)
@@ -248,6 +278,12 @@ class SemiMarkovModule(nn.Module):
         transition_logits = self.transition_logits
         if self.transition_constraints is not None:
             transition_logits = transition_logits.masked_fill(self.transition_constraints, BIG_NEG)
+
+        if DEBUG_ANNOTATE and self.merge_classes is not None and valid_classes is not None:
+            valid_classes = torch.LongTensor(
+                [self.merge_classes[ix.item()] for ix in valid_classes],
+            ).to(transition_logits.device)
+
         if valid_classes is not None:
             transition_logits = transition_logits[valid_classes][:, valid_classes]
             n_classes = len(valid_classes)

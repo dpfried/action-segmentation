@@ -155,6 +155,8 @@ class BreakfastCorpus(Corpus):
         self._label_root = label_root
         self._task_specific_steps = task_specific_steps
         assert not task_specific_steps
+        self.annotate_background_with_previous = False
+
         super(BreakfastCorpus, self).__init__(background_labels=self.BACKGROUND_LABELS)
 
     def _get_components_for_label(self, label):

@@ -43,7 +43,7 @@ class SemiMarkovModel(Model):
         else:
             allowed_starts, allowed_transitions, allowed_ends, ordered_indices_by_task = None, None, None, None
 
-        if args.annotate_background_with_previous:
+        if args.annotate_background_with_previous and not args.no_merge_classes:
             merge_classes = {}
             for task, indices in train_data.corpus._indices_by_task.items():
                 background_indices = [ix for ix in indices if ix in train_data.corpus._background_indices]
