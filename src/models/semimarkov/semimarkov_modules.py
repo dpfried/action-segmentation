@@ -63,7 +63,9 @@ class SemiMarkovModule(nn.Module):
                  allow_self_transitions=False,
                  allowed_starts: Set[int] = None,
                  allowed_transitions: Dict[int, Set[int]] = None,
-                 allowed_ends: Set[int] = None):
+                 allowed_ends: Set[int] = None,
+                 merge_classes: Dict[int, int] = None,
+                 ):
         super(SemiMarkovModule, self).__init__()
         self.args = args
         self.n_classes = n_classes
@@ -83,6 +85,15 @@ class SemiMarkovModule(nn.Module):
             self.remove_transition_constraints()
         self.max_k = args.sm_max_span_length
         # self._learn_transitions = learn_transitions
+
+        self.merge_classes = merge_classes
+        # if self.merge_classes is not None:
+        #     self.inv_merge_classes = {}
+        #     for sink, src in merge_classes.items():
+        #         assert src not in self.inv_merge_classes
+        #         self.inv_merge_classes[src] = sink
+        # else:
+        #     self.merge_classes = None
 
     # @property
     # def learn_transitions(self):
@@ -295,9 +306,17 @@ class SemiMarkovModule(nn.Module):
 
     def emission_log_probs(self, features, valid_classes):
         if valid_classes is None:
-            class_indices = range(self.n_classes)
+            class_indices = torch.LongTensor(
+                list(range(self.n_classes)),
+            ).to(self.gaussian_means.device)
         else:
             class_indices = valid_classes
+        # if self.inv_merge_classes is not None:
+        #     class_indices = [self.inv_merge_classes[ix] for ix in class_indices]
+        if self.merge_classes is not None:
+            class_indices = torch.LongTensor(
+                [self.merge_classes[ix.item()] for ix in class_indices],
+            ).to(self.gaussian_means.device)
         class_means = self.gaussian_means[class_indices]
         return self._emission_log_probs_with_means(features, class_means)
 
@@ -317,11 +336,17 @@ class SemiMarkovModule(nn.Module):
 
     def length_log_probs(self, valid_classes):
         if valid_classes is None:
-            class_indices = list(range(self.n_classes))
+            class_indices = torch.LongTensor(list(range(self.n_classes))).to(self.poisson_log_rates.device)
             n_classes = self.n_classes
         else:
             class_indices = valid_classes
             n_classes = len(valid_classes)
+        # if self.inv_merge_classes is not None:
+        #     class_indices = [self.inv_merge_classes[ix] for ix in class_indices]
+        if self.merge_classes is not None:
+            class_indices = torch.LongTensor(
+                [self.merge_classes[ix.item()] for ix in class_indices],
+            ).to(self.poisson_log_rates.device)
         log_rates = self.poisson_log_rates[class_indices]
         return self._length_log_probs_with_rates(log_rates)
 
@@ -611,7 +636,10 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
                  per_class_bias=True,
                  allowed_starts: Set[int] = None,
                  allowed_transitions: Dict[int, Set[int]] = None,
-                 allowed_ends: Set[int] = None):
+                 allowed_ends: Set[int] = None,
+                 merge_classes: Dict[int, int] = None
+                 ):
+        assert merge_classes is None
         self.args = args
         self.n_components = n_components
         self.embedding_dim = self.args.sm_component_embedding_dim

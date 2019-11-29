@@ -43,6 +43,21 @@ class SemiMarkovModel(Model):
         else:
             allowed_starts, allowed_transitions, allowed_ends, ordered_indices_by_task = None, None, None, None
 
+        if args.annotate_background_with_previous:
+            merge_classes = {}
+            for task, indices in train_data.corpus._indices_by_task.items():
+                background_indices = [ix for ix in indices if ix in train_data.corpus._background_indices]
+                nonbackground_indices = [ix for ix in indices if ix not in train_data.corpus._background_indices]
+                canon_bkg_ix = background_indices[0]
+                for ix in background_indices:
+                    assert ix not in merge_classes
+                    merge_classes[ix] = canon_bkg_ix
+                for ix in nonbackground_indices:
+                    assert ix not in merge_classes
+                    merge_classes[ix] = ix
+        else:
+            merge_classes = None
+
         if args.sm_component_model:
             if args.sm_component_decompose_steps:
                 # assert not args.task_specific_steps, "can't decompose steps unless steps are across tasks; you should remove --task_specific_steps"
@@ -64,6 +79,7 @@ class SemiMarkovModel(Model):
                 allowed_starts=allowed_starts,
                 allowed_transitions=allowed_transitions,
                 allowed_ends=allowed_ends,
+                merge_classes=merge_classes,
             )
         else:
             model = SemiMarkovModule(
@@ -74,6 +90,7 @@ class SemiMarkovModel(Model):
                 allowed_starts=allowed_starts,
                 allowed_transitions=allowed_transitions,
                 allowed_ends=allowed_ends,
+                merge_classes=merge_classes,
             )
         return SemiMarkovModel(args, n_classes, feature_dim, model, ordered_indices_by_task)
 
