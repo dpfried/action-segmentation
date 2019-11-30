@@ -19,6 +19,8 @@ def add_training_args(parser):
     parser.add_argument('--reduce_plateau_patience', type=float, default=1)
     parser.add_argument('--reduce_plateau_min_lr', type=float, default=1e-4)
 
+    parser.add_argument('--train_limit', type=int)
+
 
 def make_optimizer(args, parameters):
     opt = torch.optim.Adam(parameters, lr=args.lr)

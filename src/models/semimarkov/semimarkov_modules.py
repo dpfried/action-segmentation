@@ -681,7 +681,6 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
                  allowed_ends: Set[int] = None,
                  merge_classes: Dict[int, int] = None
                  ):
-        assert merge_classes is None
         self.args = args
         self.n_components = n_components
         self.embedding_dim = self.args.sm_component_embedding_dim
@@ -707,6 +706,8 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         self.length_layers = self.args.sm_component_length_layers
         # self.use_separate_embeddings = self.args.sm_component_separate_embeddings
         self.use_separate_embeddings = True
+
+        self.merge_classes = merge_classes
         super(ComponentSemiMarkovModule, self).__init__(args, n_classes, feature_dim, allow_self_transitions,
                                                         allowed_starts, allowed_transitions, allowed_ends)
 
@@ -816,9 +817,13 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         # kl: batch_size
         self.z, self.kl = self._get_z_and_kl(features, lengths, use_mean)
 
-    def embed_classes(self, component_embeddings, valid_classes, is_structure):
+    def embed_classes(self, component_embeddings, valid_classes, is_structure, merge_classes=False):
         if valid_classes is None:
             valid_classes = torch.arange(self.n_classes, device=component_embeddings.weight.device)
+        if merge_classes and self.merge_classes is not None:
+            valid_classes = torch.LongTensor(
+                [self.merge_classes[ix.item()] for ix in valid_classes],
+            ).to(valid_classes.device)
         assert valid_classes.dim() == 1, valid_classes
         offset = 0
         offsets = [offset]
@@ -854,7 +859,8 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         class_embeddings = self.embed_classes(
             self.initial_embeddings if self.use_separate_embeddings else self.shared_embeddings,
             valid_classes,
-            is_structure=True
+            is_structure=True,
+            merge_classes=False,
         )
         x = self.initial_weights(class_embeddings)
         x = x.squeeze(-1)
@@ -872,7 +878,8 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         class_embeddings = self.embed_classes(
             self.transition_embeddings if self.use_separate_embeddings else self.shared_embeddings,
             valid_classes,
-            is_structure=True
+            is_structure=True,
+            merge_classes=False,
         )
         x = self.transition_weights(class_embeddings)
         x = torch.einsum("bfe,bte->btf", [x, class_embeddings])
@@ -895,7 +902,8 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         class_embeddings = self.embed_classes(
             self.emission_embeddings if self.use_separate_embeddings else self.shared_embeddings,
             valid_classes,
-            is_structure=False
+            is_structure=False,
+            merge_classes=True,
         )
         # batch_size|1 x len(valid_classes) x feature_dim
         class_means = self.emission_mean_mlp(class_embeddings)
@@ -910,7 +918,8 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         class_embeddings = self.embed_classes(
             self.length_embeddings if self.use_separate_embeddings else self.shared_embeddings,
             valid_classes,
-            is_structure=True
+            is_structure=True,
+            merge_classes=True,
         )
         # batch_size|1 x len(valid_classes)
         class_log_rates = self.length_mlp(class_embeddings).squeeze(-1)

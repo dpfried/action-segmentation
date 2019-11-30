@@ -188,6 +188,8 @@ class SemiMarkovModel(Model):
             train_nll = 0
             train_kl = 0
             for batch_ix, batch in enumerate(tqdm.tqdm(loader, ncols=80)):
+                if self.args.train_limit and batch_ix >= self.args.train_limit:
+                    break
                 # if self.args.cuda:
                 #     features = features.cuda()
                 #     task_indices = task_indices.cuda()
@@ -353,12 +355,14 @@ class SemiMarkovModel(Model):
             for ix, (video, pred_labels_trim) in enumerate(zip(videos, pred_labels_trim_s)):
                 preds = pred_labels_trim.numpy()
                 predictions[video] = preds
-                if constraints_expanded is not None:
-                    step_indices = test_data.get_ordered_indices_no_background()[task]
-                    for t, label in enumerate(preds):
-                        if label in step_indices:
-                            label_ix = step_indices.index(label)
-                            assert batch['constraints'][ix,t,label_ix] == 1
+                # if constraints_expanded is not None:
+                #     this_cons = batch['constraints'][ix]
+                #     if this_cons.sum() > 0:
+                #         step_indices = test_data.get_ordered_indices_no_background()[task]
+                #         for t, label in enumerate(preds):
+                #             if label in step_indices:
+                #                 label_ix = step_indices.index(label)
+                #                 assert batch['constraints'][ix,t,label_ix] == 1
                 assert self.model.n_classes not in predictions[video], "predictions should not contain EOS: {}".format(
                     predictions[video])
         return predictions
