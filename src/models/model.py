@@ -46,7 +46,7 @@ def padding_colate(data_samples):
     # max_length = max(lengths)
     # lengths_t = torch.LongTensor(lengths)
 
-    pad_keys = ['gt_single', 'features']
+    pad_keys = ['gt_single', 'features', 'constraints']
     nopad_keys = ['task_name', 'video_name', 'task_indices', 'gt', 'gt_with_background']
     data = {k: v for k, v in unpacked.items() if k in nopad_keys}
     data['lengths'] = torch.LongTensor(lengths)

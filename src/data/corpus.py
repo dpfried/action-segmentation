@@ -21,7 +21,7 @@ WARN_ON_MISMATCH = False
 class Video(object):
     def __init__(self, feature_root, K, remove_background, *, nonbackground_timesteps=None,
                  gt=None, gt_with_background=None, name='', cache_features=False, has_label=True,
-                 features_contain_background=True):
+                 features_contain_background=True, constraints=None):
         """
         Args:
             feature_root (str): path to video representation
@@ -38,6 +38,8 @@ class Video(object):
         self._cache_features = cache_features
         self._has_label = has_label
         self._features_contain_background = features_contain_background
+
+        self._constraints = constraints
 
         assert name
 
@@ -92,6 +94,12 @@ class Video(object):
     @property
     def has_label(self):
         return self._has_label
+
+    @property
+    def constraints(self):
+        if self._remove_background:
+            raise NotImplementedError("remove_background for constraints")
+        return self._constraints
 
     def features(self):
         self._check_truncation()
@@ -301,6 +309,8 @@ class Datasplit(Dataset):
         if video_obj.has_label:
             gt_single = [gt_t[0] for gt_t in video_obj.gt()]
 
+        constraints = video_obj.constraints
+
         if self.subsample != 1:
             subsample_indices = np.arange(features.shape[0] // self.subsample) * self.subsample
             subsample_boundaries = list(
@@ -320,6 +330,8 @@ class Datasplit(Dataset):
             if video_obj._has_label:
                 gt_single = torch.LongTensor(gt_single)
                 gt_single_sampled = torch.LongTensor(gt_single_sampled)
+            if constraints is not None:
+                constraints = torch.from_numpy(constraints).float()
         else:
             task_indices = list(task_indices)
 
@@ -333,6 +345,9 @@ class Datasplit(Dataset):
             'subsample_indices': subsample_indices,
             'subsample_boundaries': subsample_boundaries,
         }
+
+        if constraints is not None:
+            data['constraints'] = constraints
 
         if video_obj._has_label:
             data.update({
@@ -355,6 +370,9 @@ class Datasplit(Dataset):
         raise NotImplementedError("subclasses should implement _load_ground_truth")
 
     def get_allowed_starts_and_transitions(self):
+        raise NotImplementedError("subclasses should implement get_allowed_starts_and_transitions")
+
+    def get_ordered_indices_no_background(self):
         raise NotImplementedError("subclasses should implement get_allowed_starts_and_transitions")
 
     def canonicalize_background(self, index):
@@ -424,8 +442,11 @@ class Datasplit(Dataset):
                         for gt_t in gt
                     ]
                     pred = [self.canonicalize_background(ix) for ix in pred]
+                    # print("video: {}".format(video_name))
                     # print("gt: {}".format([gt_t[0] for gt_t in gt]))
                     # print("pred: {}".format(pred))
+                    # print("gt enum: {}".format(list(enumerate([gt_t[0] for gt_t in gt]))))
+                    # print("pred enum: {}".format(list(enumerate(pred))))
                     # print()
 
                 accuracy.add_gt_labels(gt)

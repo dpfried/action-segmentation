@@ -100,11 +100,21 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
 
         all_mof = np.array([stats['mof'] for stats in stats_by_name.values()])
         sum_mof = all_mof.sum(axis=0)
+
         all_mof_non_bg = np.array([stats['mof_non_bg'] for stats in stats_by_name.values()])
         sum_mof_non_bg = all_mof_non_bg.sum(axis=0)
+
+        all_step_recall_non_bg = np.array([stats['step_recall_non_bg'] for stats in stats_by_name.values()])
+        sum_step_recall_non_bg = all_step_recall_non_bg.sum(axis=0)
+
+        all_leven = np.array([stats['mean_normed_levenshtein'] for stats in stats_by_name.values()])
+        sum_leven = all_leven.sum(axis=0)
+
         return {
             '{}_mof'.format(name): float(sum_mof[0]) / sum_mof[1],
             '{}_mof_non_bg'.format(name): float(sum_mof_non_bg[0]) / sum_mof_non_bg[1],
+            '{}_step_recall_non_bg'.format(name): float(sum_step_recall_non_bg[0]) / sum_step_recall_non_bg[1],
+            '{}_mean_normed_levenshtein'.format(name): float(sum_leven[0]) / sum_leven[1],
         }
 
     models_by_epoch = {}
@@ -128,13 +138,20 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
                 log_str += '\t{} {}'.format(stat, value)
         # log_str += '\t{} '.format(train_name)
         for stats in [train_stats, dev_stats]:
-            log_str += '\t'
+            log_str += '\n'
             for name, val in sorted(stats.items()):
                 log_str += ' {} {:.4f}'.format(name, val)
         # log_str += '\t{} mof {:.4f}\tdev mof {:.4f}'.format(train_name, train_mof, dev_mof)
         logger.debug(log_str)
         models_by_epoch[epoch] = pickle.dumps(model)
         dev_mof_by_epoch[epoch] = dev_stats['dev_mof']
+
+        if args.model_output_path and epoch % 5 == 0:
+            os.makedirs(args.model_output_path, exist_ok=True)
+            model_fname = os.path.join(args.model_output_path, '{}_epoch-{}.pkl'.format(split_name, epoch))
+            print("writing model to {}".format(model_fname))
+            with open(model_fname, 'wb') as f:
+                pickle.dump(model, f)
 
     model.fit(train_data, use_labels=use_labels, callback_fn=callback_fn)
 
@@ -189,6 +206,8 @@ def make_data_splits(args):
             task_specific_steps=args.task_specific_steps,
             annotate_background_with_previous=args.annotate_background_with_previous,
             use_secondary='related' in args.crosstask_training_data,
+            constraints_root='data/crosstask/crosstask_constraints',
+            load_constraints=True,
         )
         corpus._cache_features = True
         train_task_sets = args.crosstask_training_data

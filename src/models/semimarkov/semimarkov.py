@@ -9,6 +9,8 @@ from models.model import Model, make_optimizer, make_data_loader
 from models.semimarkov.semimarkov_modules import SemiMarkovModule, ComponentSemiMarkovModule
 from models.semimarkov import semimarkov_utils
 
+from utils.utils import all_equal
+
 
 class SemiMarkovModel(Model):
     @classmethod
@@ -18,6 +20,9 @@ class SemiMarkovModel(Model):
         parser.add_argument('--sm_component_model', action='store_true')
 
         parser.add_argument('--sm_constrain_transitions', action='store_true')
+
+        parser.add_argument('--sm_constrain_with_narration', choices=['train', 'test'], nargs='*', default=[])
+        parser.add_argument('--sm_constrain_narration_weight', type=float, default=-1e4)
 
     @classmethod
     def from_args(cls, args, train_data):
@@ -127,6 +132,16 @@ class SemiMarkovModel(Model):
             addl_allowed_ends = None
         return addl_allowed_ends
 
+    def expand_constraints(self, datasplit, task, task_indices, constraints):
+        task_indices = list(task_indices.cpu().numpy())
+        step_indices = datasplit.get_ordered_indices_no_background()[task]
+        # constraints: batch_dim x T x K
+        assert constraints.size(2) == len(step_indices)
+        constraints_expanded = torch.zeros((constraints.size(0), constraints.size(1), len(task_indices)))
+        for index, label in enumerate(step_indices):
+            constraints_expanded[:,:,task_indices.index(label)] = constraints[:,:,index]
+        return constraints_expanded
+
     def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
         self.model.train()
         self.model.flatten_parameters()
@@ -183,6 +198,15 @@ class SemiMarkovModel(Model):
                 task_indices = batch['task_indices']
                 lengths = batch['lengths']
 
+                if 'train' in self.args.sm_constrain_with_narration:
+                    assert all_equal(tasks)
+                    constraints_expanded = self.expand_constraints(
+                        train_data, tasks[0], task_indices[0], 1 - batch['constraints']
+                    )
+                    constraints_expanded *= self.args.sm_constrain_narration_weight
+                else:
+                    constraints_expanded = None
+
                 num_frames += lengths.sum().item()
                 num_videos += len(lengths)
 
@@ -191,6 +215,8 @@ class SemiMarkovModel(Model):
                 if self.args.cuda:
                     features = features.cuda()
                     lengths = lengths.cuda()
+                    if constraints_expanded is not None:
+                        constraints_expanded = constraints_expanded.cuda()
 
                 if use_labels:
                     labels = batch['gt_single']
@@ -210,7 +236,8 @@ class SemiMarkovModel(Model):
                                                  spans=spans,
                                                  add_eos=True,
                                                  use_mean_z=use_mean_z,
-                                                 additional_allowed_ends_per_instance=addl_allowed_ends)
+                                                 additional_allowed_ends_per_instance=addl_allowed_ends,
+                                                 constraints=constraints_expanded)
                 kl = self.model.kl.mean()
                 if use_labels:
                     this_loss = nll
@@ -273,21 +300,33 @@ class SemiMarkovModel(Model):
             # features = features.unsqueeze(0)
             # task_indices = task_indices.unsqueeze(0)
 
-            if self.args.cuda:
-                features = features.cuda()
-                task_indices = [ti.cuda() for ti in task_indices]
-                lengths = lengths.cuda()
-
             videos = batch['video_name']
             tasks = batch['task_name']
             assert len(set(tasks)) == 1
             task = next(iter(tasks))
 
+            if 'test' in self.args.sm_constrain_with_narration:
+                assert all_equal(tasks)
+                constraints_expanded = self.expand_constraints(
+                    test_data, task, task_indices[0], 1 - batch['constraints']
+                )
+                constraints_expanded *= self.args.sm_constrain_narration_weight
+            else:
+                constraints_expanded = None
+
+            if self.args.cuda:
+                features = features.cuda()
+                task_indices = [ti.cuda() for ti in task_indices]
+                lengths = lengths.cuda()
+                if constraints_expanded is not None:
+                    constraints_expanded = constraints_expanded.cuda()
+
             addl_allowed_ends = self.make_additional_allowed_ends(tasks, lengths)
 
             # TODO: figure out under which eval conditions use_mean_z should be False
             pred_spans = self.model.viterbi(features, lengths, task_indices, add_eos=True, use_mean_z=True,
-                                            additional_allowed_ends_per_instance=addl_allowed_ends)
+                                            additional_allowed_ends_per_instance=addl_allowed_ends,
+                                            constraints=constraints_expanded)
             pred_labels = semimarkov_utils.spans_to_labels(pred_spans)
 
             # if self.args.sm_constrain_transitions:
@@ -311,8 +350,15 @@ class SemiMarkovModel(Model):
             pred_labels_trim_s = self.model.trim(pred_labels, lengths, check_eos=True)
 
             # assert len(pred_labels_trim_s) == 1, "batch size should be 1"
-            for video, pred_labels_trim in zip(videos, pred_labels_trim_s):
-                predictions[video] = pred_labels_trim.numpy()
+            for ix, (video, pred_labels_trim) in enumerate(zip(videos, pred_labels_trim_s)):
+                preds = pred_labels_trim.numpy()
+                predictions[video] = preds
+                if constraints_expanded is not None:
+                    step_indices = test_data.get_ordered_indices_no_background()[task]
+                    for t, label in enumerate(preds):
+                        if label in step_indices:
+                            label_ix = step_indices.index(label)
+                            assert batch['constraints'][ix,t,label_ix] == 1
                 assert self.model.n_classes not in predictions[video], "predictions should not contain EOS: {}".format(
                     predictions[video])
         return predictions

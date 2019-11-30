@@ -340,7 +340,7 @@ class SemiMarkovModule(nn.Module):
             )
         return torch.cat(log_probs, dim=2)
 
-    def emission_log_probs(self, features, valid_classes):
+    def emission_log_probs(self, features, valid_classes, constraints):
         if valid_classes is None:
             class_indices = torch.LongTensor(
                 list(range(self.n_classes)),
@@ -354,7 +354,10 @@ class SemiMarkovModule(nn.Module):
                 [self.merge_classes[ix.item()] for ix in class_indices],
             ).to(self.gaussian_means.device)
         class_means = self.gaussian_means[class_indices]
-        return self._emission_log_probs_with_means(features, class_means)
+        elp = self._emission_log_probs_with_means(features, class_means)
+        if constraints is not None:
+            elp = elp + constraints
+        return elp
 
     def _length_log_probs_with_rates(self, log_rates):
         n_classes = log_rates.size(-1)
@@ -520,7 +523,8 @@ class SemiMarkovModule(nn.Module):
         self.kl = Variable(torch.zeros(features.size(0)).to(features.device), requires_grad=True)
 
     def score_features(self, features, lengths, valid_classes, add_eos, use_mean_z,
-                       additional_allowed_ends_per_instance=None):
+                       additional_allowed_ends_per_instance=None,
+                       constraints=None):
         # assert all_equal(lengths), "varied length scoring isn't implemented"
         # TODO: make this functional
         self.set_z(features, lengths, use_mean=use_mean_z)
@@ -545,7 +549,7 @@ class SemiMarkovModule(nn.Module):
 
         return self.log_hsmm(
             self.transition_log_probs(valid_classes),
-            self.emission_log_probs(projected_features, valid_classes),
+            self.emission_log_probs(projected_features, valid_classes, constraints),
             self.initial_log_probs(valid_classes),
             self.length_log_probs(valid_classes),
             lengths,
@@ -555,7 +559,7 @@ class SemiMarkovModule(nn.Module):
         )
 
     def log_likelihood(self, features, lengths, valid_classes_per_instance, spans=None, add_eos=True, use_mean_z=False,
-                       additional_allowed_ends_per_instance=None):
+                       additional_allowed_ends_per_instance=None, constraints=None):
         if valid_classes_per_instance is not None:
             assert all_equal(set(vc.detach().cpu().numpy()) for vc in
                              valid_classes_per_instance), "must have same valid_classes for all instances in the batch"
@@ -566,7 +570,8 @@ class SemiMarkovModule(nn.Module):
             C = self.n_classes
 
         scores = self.score_features(features, lengths, valid_classes, add_eos=add_eos, use_mean_z=use_mean_z,
-                                     additional_allowed_ends_per_instance=additional_allowed_ends_per_instance)
+                                     additional_allowed_ends_per_instance=additional_allowed_ends_per_instance,
+                                     constraints=constraints)
 
         K = scores.size(2)
         assert K <= self.max_k
@@ -615,7 +620,7 @@ class SemiMarkovModule(nn.Module):
         return log_likelihood
 
     def viterbi(self, features, lengths, valid_classes_per_instance, add_eos=True, use_mean_z=False,
-                additional_allowed_ends_per_instance=None):
+                additional_allowed_ends_per_instance=None, constraints=None):
         if valid_classes_per_instance is not None:
             assert all_equal(set(vc.detach().cpu().numpy()) for vc in
                              valid_classes_per_instance), "must have same valid_classes for all instances in the batch"
@@ -625,7 +630,8 @@ class SemiMarkovModule(nn.Module):
             valid_classes = None
             C = self.n_classes
         scores = self.score_features(features, lengths, valid_classes, add_eos=add_eos, use_mean_z=use_mean_z,
-                                     additional_allowed_ends_per_instance=additional_allowed_ends_per_instance)
+                                     additional_allowed_ends_per_instance=additional_allowed_ends_per_instance,
+                                     constraints=constraints)
         if add_eos:
             eos_lengths = lengths + 1
         else:
@@ -884,7 +890,7 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         # so dim 1 should be normalized (in log-space)
         return F.log_softmax(x, dim=1)
 
-    def emission_log_probs(self, features, valid_classes):
+    def emission_log_probs(self, features, valid_classes, constraints):
         # batch_size|1 x len(valid_classes) x embedding_dim
         class_embeddings = self.embed_classes(
             self.emission_embeddings if self.use_separate_embeddings else self.shared_embeddings,
@@ -894,7 +900,10 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         # batch_size|1 x len(valid_classes) x feature_dim
         class_means = self.emission_mean_mlp(class_embeddings)
         class_means += self.emission_mean_bias.unsqueeze(0).unsqueeze(0).expand_as(class_means)
-        return self._emission_log_probs_with_means(features, class_means)
+        elp = self._emission_log_probs_with_means(features, class_means)
+        if constraints is not None:
+            elp = elp + constraints
+        return elp
 
     def length_log_probs(self, valid_classes):
         # batch_size|1 x len(valid_classes) x embedding_dim
