@@ -255,7 +255,80 @@ class CrosstaskDatasplit(Datasplit):
                     has_label=has_label,
                     cache_features=self._corpus._cache_features,
                     features_contain_background=self._corpus._features_contain_background,
+                    constraints=self.groundtruth.constraints_by_task[task_name][video],
                 )
+
+    def get_ordered_indices_no_background(self):
+        ordered_indices_by_task = {}
+        for task in self._corpus._all_tasks:
+            indices = [
+                self._corpus._index(self._corpus.get_label(task.index, step))
+                for step in task.steps
+            ]
+            ordered_indices_by_task[task.index] = indices
+        return ordered_indices_by_task
+
+    def get_allowed_starts_and_transitions(self):
+
+        allowed_starts = set()
+        allowed_transitions = {}
+        allowed_ends = set()
+
+        ordered_indices_by_task = {}
+
+        for task in self._corpus._all_tasks:
+            if self.remove_background:
+                indices = self.get_ordered_indices_no_background()[task.index]
+                ordered_indices_by_task[task.index] = indices
+
+                for src, tgt in zip(indices, indices[1:]):
+                    if src not in allowed_transitions:
+                        allowed_transitions[src] = set()
+                    allowed_transitions[src].add(tgt)
+
+                allowed_starts.add(indices[0])
+                allowed_ends.add(indices[-1])
+            else:
+                step_indices = [
+                    self._corpus._index(self._corpus.get_label(task.index, step))
+                    for step in task.steps
+                ]
+                background_indices = [
+                    self._corpus._index(lbl)
+                    for lbl in self._corpus.BACKGROUND_LABELS_BY_TASK[task.index]
+                ]
+                assert len(background_indices) == len(step_indices) + 1
+                indices = []
+                for ix in range(len(step_indices)):
+                    indices.append(background_indices[ix])
+                    indices.append(step_indices[ix])
+                indices.append(background_indices[-1])
+                assert len(indices) == 2 * len(step_indices) + 1
+
+                STEP_TO_STEP = False
+
+                if STEP_TO_STEP:
+                    for i, step_ix in enumerate(step_indices):
+                        s = {background_indices[i+1]}
+                        if i < len(step_indices) - 1:
+                            s.add(step_indices[i+1])
+                        allowed_transitions[step_ix] = s
+
+                    for i, bg_ix in enumerate(background_indices[:-1]):
+                        s = {step_indices[i]}
+                        s.add(background_indices[i+1])
+                        allowed_transitions[bg_ix] = s
+                else:
+                    for src, tgt in zip(indices, indices[1:]):
+                        if src not in allowed_transitions:
+                            allowed_transitions[src] = set()
+                        allowed_transitions[src].add(tgt)
+
+                allowed_starts.add(indices[0])
+                allowed_ends.add(indices[-1])
+                ordered_indices_by_task[task.index] = indices
+
+        return allowed_starts, allowed_transitions, allowed_ends, ordered_indices_by_task
 
 
 class CrosstaskCorpus(Corpus):
@@ -275,7 +348,8 @@ class CrosstaskCorpus(Corpus):
     }
 
     def __init__(self, release_root, feature_root, dimensions_per_feature_group=None,
-                 features_contain_background=True, task_specific_steps=True, use_secondary=False):
+                 features_contain_background=True, task_specific_steps=True, use_secondary=False,
+                 annotate_background_with_previous=False, load_constraints=False, constraints_root=None):
         print("feature root: {}".format(feature_root))
 
         self._release_root = release_root
@@ -296,13 +370,33 @@ class CrosstaskCorpus(Corpus):
 
         self.task_specific_steps = task_specific_steps
 
-        self.BACKGROUND_LABELS_BY_TASK = {
-            task.index: self.get_label(task.index, "BKG")
-            for task in self._all_tasks
-        }
+        self.annotate_background_with_previous = annotate_background_with_previous
+
+        if load_constraints:
+            assert constraints_root is not None
+        self._constraints_root = constraints_root
+        self.load_constraints = load_constraints
+
+        if annotate_background_with_previous:
+            assert task_specific_steps
+            self.BACKGROUND_LABELS_BY_TASK = {
+                task.index: [self.get_label(task.index, "BKG_{}".format(step))
+                             for step in ["FIRST"] + task.steps]
+                for task in self._all_tasks
+            }
+        else:
+            self.BACKGROUND_LABELS_BY_TASK = {
+                task.index: [self.get_label(task.index, "BKG")]
+                for task in self._all_tasks
+            }
 
         # if not self.task_specific_steps, BACKGROUND_LABELS_BY_TASK will map everything to BKG, so we need to deduplicate
-        self.BACKGROUND_LABELS = list(sorted(set(self.BACKGROUND_LABELS_BY_TASK.values())))
+
+        # self.BACKGROUND_LABELS = list(sorted(set(self.BACKGROUND_LABELS_BY_TASK.values())))
+        self.BACKGROUND_LABELS = list(sorted(set(
+            lbl for task_labels in self.BACKGROUND_LABELS_BY_TASK.values()
+            for lbl in task_labels
+        )))
 
         super(CrosstaskCorpus, self).__init__(background_labels=self.BACKGROUND_LABELS)
 
@@ -322,7 +416,7 @@ class CrosstaskCorpus(Corpus):
 
     def _load_mapping(self):
         for task in self._all_tasks:
-            indices = [self._index(self.BACKGROUND_LABELS_BY_TASK[task.index])]
+            indices = [self._index(lbl) for lbl in self.BACKGROUND_LABELS_BY_TASK[task.index]]
             indices += [self._index(self.get_label(task.index, step)) for step in task.steps]
             self.update_indices_by_task(task.index, indices)
 
@@ -330,6 +424,7 @@ class CrosstaskCorpus(Corpus):
     def get_datasplit(self, remove_background, task_sets=None, split='train', task_ids=None, full=True, subsample=1, feature_downscale=1.0):
         return CrosstaskDatasplit(self, remove_background, task_sets=task_sets, split=split, task_ids=task_ids,
                                   full=full, subsample=subsample, feature_downscale=feature_downscale)
+
 
 class CrosstaskGroundTruth(GroundTruth):
 
@@ -342,7 +437,32 @@ class CrosstaskGroundTruth(GroundTruth):
         self._t_by_video = t_by_video
         task_names = list(sorted(set(self._tasks_by_id)))
         self._task_names = task_names
+
+        self.constraints_by_task = {}
+
         super(CrosstaskGroundTruth, self).__init__(corpus, task_names, remove_background)
+
+    def _load_gt_single(self, task, T, num_steps, filename):
+        gt = read_assignment_list(T, num_steps, filename)
+        # turn these step indices into global indices
+        global_gt = []
+
+        previous_step_ix = 0
+        for gt_t in gt:
+            new_gt_t = []
+            for ix in gt_t:
+                if ix == 0:
+                    if self._corpus.annotate_background_with_previous:
+                        label_idx = self._corpus.label2index[self._corpus.BACKGROUND_LABELS_BY_TASK[task][previous_step_ix]]
+                    else:
+                        assert len(self._corpus.BACKGROUND_LABELS_BY_TASK[task]) == 1
+                        label_idx = self._corpus.label2index[self._corpus.BACKGROUND_LABELS_BY_TASK[task][0]]
+                else:
+                    label_idx = self._corpus._index(self._corpus.get_label(task, self._tasks_by_id[task].steps[ix - 1]))
+                    previous_step_ix = ix
+                new_gt_t.append(label_idx)
+            global_gt.append(new_gt_t)
+        return global_gt
 
     def _load_gt(self):
         glob_path = os.path.join(self._corpus._release_root, "annotations", "*.csv")
@@ -359,21 +479,19 @@ class CrosstaskGroundTruth(GroundTruth):
             video = '_'.join(splits[1:])
             T = self._t_by_video[video]
             num_steps = self._K_by_task[task]
-            gt = read_assignment_list(T, num_steps, filename)
-            # turn these step indices into global indices
-            global_gt = []
-            for gt_t in gt:
-                new_gt_t = []
-                for ix in gt_t:
-                    if ix == 0:
-                        label_idx = self._corpus.label2index[self._corpus.BACKGROUND_LABELS_BY_TASK[task]]
-                    else:
-                        label_idx = self._corpus._index(self._corpus.get_label(task, self._tasks_by_id[task].steps[ix - 1]))
-                    new_gt_t.append(label_idx)
-                global_gt.append(new_gt_t)
+            global_gt = self._load_gt_single(task, T, num_steps, filename)
             if task not in self.gt_by_task:
                 self.gt_by_task[task] = {}
             self.gt_by_task[task][video] = global_gt
+
+            if self._corpus.load_constraints:
+                constraint_fname = os.path.join(self._corpus._constraints_root, os.path.split(filename)[1])
+                constraint_mat = read_assignment(
+                    T, (num_steps if self._remove_background else num_steps-1), constraint_fname, include_background=False
+                )
+                if task not in self.constraints_by_task:
+                    self.constraints_by_task[task] = {}
+                self.constraints_by_task[task][video] = constraint_mat
 
     # def _load_mapping(self):
     #     super(CrosstaskGroundTruth, self)._load_mapping()

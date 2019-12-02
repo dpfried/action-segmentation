@@ -21,7 +21,7 @@ WARN_ON_MISMATCH = False
 class Video(object):
     def __init__(self, feature_root, K, remove_background, *, nonbackground_timesteps=None,
                  gt=None, gt_with_background=None, name='', cache_features=False, has_label=True,
-                 features_contain_background=True):
+                 features_contain_background=True, constraints=None):
         """
         Args:
             feature_root (str): path to video representation
@@ -38,6 +38,8 @@ class Video(object):
         self._cache_features = cache_features
         self._has_label = has_label
         self._features_contain_background = features_contain_background
+
+        self._constraints = constraints
 
         assert name
 
@@ -92,6 +94,12 @@ class Video(object):
     @property
     def has_label(self):
         return self._has_label
+
+    @property
+    def constraints(self):
+        if self._remove_background:
+            raise NotImplementedError("remove_background for constraints")
+        return self._constraints
 
     def features(self):
         self._check_truncation()
@@ -301,6 +309,8 @@ class Datasplit(Dataset):
         if video_obj.has_label:
             gt_single = [gt_t[0] for gt_t in video_obj.gt()]
 
+        constraints = video_obj.constraints
+
         if self.subsample != 1:
             subsample_indices = np.arange(features.shape[0] // self.subsample) * self.subsample
             subsample_boundaries = list(
@@ -320,6 +330,8 @@ class Datasplit(Dataset):
             if video_obj._has_label:
                 gt_single = torch.LongTensor(gt_single)
                 gt_single_sampled = torch.LongTensor(gt_single_sampled)
+            if constraints is not None:
+                constraints = torch.from_numpy(constraints).float()
         else:
             task_indices = list(task_indices)
 
@@ -333,6 +345,9 @@ class Datasplit(Dataset):
             'subsample_indices': subsample_indices,
             'subsample_boundaries': subsample_boundaries,
         }
+
+        if constraints is not None:
+            data['constraints'] = constraints
 
         if video_obj._has_label:
             data.update({
@@ -353,6 +368,18 @@ class Datasplit(Dataset):
 
     def _load_ground_truth_and_videos(self, remove_background):
         raise NotImplementedError("subclasses should implement _load_ground_truth")
+
+    def get_allowed_starts_and_transitions(self):
+        raise NotImplementedError("subclasses should implement get_allowed_starts_and_transitions")
+
+    def get_ordered_indices_no_background(self):
+        raise NotImplementedError("subclasses should implement get_allowed_starts_and_transitions")
+
+    def canonicalize_background(self, index):
+        if index in self._corpus._background_indices:
+            return self._corpus._background_indices[0]
+        else:
+            return index
 
     def accuracy_corpus(self, optimal_assignment: bool, prediction_function, prefix='', verbose=True,
                         compare_to_folder=None):
@@ -409,6 +436,19 @@ class Datasplit(Dataset):
 
                     assert len(gt) == len(pred), "{} != {}".format(len(gt), len(pred))
 
+                if self.corpus.annotate_background_with_previous:
+                    gt = [
+                        [self.canonicalize_background(ix) for ix in gt_t]
+                        for gt_t in gt
+                    ]
+                    pred = [self.canonicalize_background(ix) for ix in pred]
+                    # print("video: {}".format(video_name))
+                    # print("gt: {}".format([gt_t[0] for gt_t in gt]))
+                    # print("pred: {}".format(pred))
+                    # print("gt enum: {}".format(list(enumerate([gt_t[0] for gt_t in gt]))))
+                    # print("pred enum: {}".format(list(enumerate(pred))))
+                    # print()
+
                 accuracy.add_gt_labels(gt)
                 accuracy.add_predicted_labels(pred)
                 long_gt += gt
@@ -449,10 +489,10 @@ class Datasplit(Dataset):
                     compare_accuracy.add_gt_labels(gt)
                     compare_accuracy.add_predicted_labels(pred)
 
-            named_accuracies = [('this_run', accuracy)]
+            named_accuracies = [('model', accuracy)]
 
             if compare_to_folder is not None:
-                named_accuracies.append(('comparison', compare_accuracy))
+                named_accuracies.append(('comparison: {}'.format(compare_to_folder), compare_accuracy))
 
             for acc_name, acc in named_accuracies:
                 # if opt.bg:
@@ -462,8 +502,11 @@ class Datasplit(Dataset):
                 #     # enforce to SIL class assign nothing
                 #     acc.exclude[0] = [-1]
 
+                if verbose:
+                    logger.debug('Stats for {}'.format(acc_name))
+
                 total_fr = acc.mof(optimal_assignment, possible_gt_labels=self.corpus.indices_by_task(task))
-                if acc_name == 'this_run':
+                if acc_name == 'model':
                     self._gt2label = acc._gt2cluster
                     self._label2gt = {}
                     for key, val in self._gt2label.items():
@@ -481,6 +524,8 @@ class Datasplit(Dataset):
                 acc.iou_classes()
                 acc.levenshtein()
                 acc.single_step_recall()
+                if verbose:
+                    logger.debug('\n')
 
             self.return_stat = accuracy.stat()
 
@@ -500,9 +545,13 @@ class Datasplit(Dataset):
             stats = accuracy.stat()
             if compare_to_folder is not None:
                 comparison_stats = compare_accuracy.stat()
+                if verbose:
+                    logger.debug("\n")
                 stats['comparison_mof'] = comparison_stats['mof']
                 stats['comparison_mof_bg'] = comparison_stats['mof_bg']
                 stats['comparison_mof_non_bg'] = comparison_stats['mof_non_bg']
+                stats['comparison_step_recall_non_bg'] = comparison_stats['step_recall_non_bg']
+                stats['comparison_mean_normed_levenshtein'] = comparison_stats['mean_normed_levenshtein']
 
             stats_by_task[task] = accuracy.stat()
         return stats_by_task

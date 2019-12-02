@@ -11,7 +11,7 @@ from data.breakfast import BreakfastCorpus
 from data.corpus import Datasplit
 from data.crosstask import CrosstaskCorpus
 from models.framewise import FramewiseGaussianMixture, FramewiseDiscriminative, FramewiseBaseline
-from models.sequential import SequentialDiscriminative
+from models.sequential import SequentialDiscriminative, SequentialCanonicalBaseline
 from models.model import Model, add_training_args
 from models.semimarkov.semimarkov import SemiMarkovModel
 from utils.logger import logger
@@ -22,6 +22,7 @@ CLASSIFIERS = {
     'framewise_baseline': FramewiseBaseline,
     'semimarkov': SemiMarkovModel,
     'sequential_discriminative': SequentialDiscriminative,
+    'sequential_canonical_baseline': SequentialCanonicalBaseline,
 }
 
 
@@ -49,8 +50,10 @@ def add_data_args(parser):
 
     group.add_argument('--frame_subsample', type=int, default=1, help="interval to subsample frames at (e.g. 10 takes every 10th frame)")
 
-    group.add_argument('--task_specific_steps', action='store_true',
-                       help="")
+    group.add_argument('--task_specific_steps', action='store_true', help="")
+    group.add_argument('--annotate_background_with_previous', action='store_true', help="")
+
+    group.add_argument('--no_merge_classes', action='store_true', help="")
 
 
 def add_classifier_args(parser):
@@ -67,14 +70,17 @@ def test(args, model: Model, test_data: Datasplit, test_data_name: str, verbose=
         optimal_assignment = False
     else:
         assert args.training == 'unsupervised'
-        optimal_assignment = True
+        # if we're constraining the transitions to be the canonical order in the semimarkov, we don't need oracle reassignment
+        optimal_assignment = not (args.classifier == 'semimarkov' and args.sm_constrain_transitions)
     predictions_by_video = model.predict(test_data)
     prediction_function = lambda video: predictions_by_video[video.name]
-    stats = test_data.accuracy_corpus(optimal_assignment,
-                                      prediction_function,
-                                      prefix=test_data_name,
-                                      verbose=verbose,
-                                      compare_to_folder=args.compare_to_prediction_folder)
+    stats = test_data.accuracy_corpus(
+        optimal_assignment,
+        prediction_function,
+        prefix=test_data_name,
+        verbose=verbose,
+        compare_to_folder=args.compare_to_prediction_folder if not test_data_name.startswith('train') else None
+    )
     return stats
 
 
@@ -94,8 +100,22 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
 
         all_mof = np.array([stats['mof'] for stats in stats_by_name.values()])
         sum_mof = all_mof.sum(axis=0)
-        right, total = sum_mof
-        return float(right) / total
+
+        all_mof_non_bg = np.array([stats['mof_non_bg'] for stats in stats_by_name.values()])
+        sum_mof_non_bg = all_mof_non_bg.sum(axis=0)
+
+        all_step_recall_non_bg = np.array([stats['step_recall_non_bg'] for stats in stats_by_name.values()])
+        sum_step_recall_non_bg = all_step_recall_non_bg.sum(axis=0)
+
+        all_leven = np.array([stats['mean_normed_levenshtein'] for stats in stats_by_name.values()])
+        sum_leven = all_leven.sum(axis=0)
+
+        return {
+            '{}_mof'.format(name): float(sum_mof[0]) / sum_mof[1],
+            '{}_mof_non_bg'.format(name): float(sum_mof_non_bg[0]) / sum_mof_non_bg[1],
+            '{}_step_recall_non_bg'.format(name): float(sum_step_recall_non_bg[0]) / sum_step_recall_non_bg[1],
+            '{}_mean_normed_levenshtein'.format(name): float(sum_leven[0]) / sum_leven[1],
+        }
 
     models_by_epoch = {}
     dev_mof_by_epoch = {}
@@ -105,21 +125,33 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
         stats_by_epoch[epoch] = stats
         if train_sub_data is not None:
             train_name = 'train_subset'
-            train_mof = evaluate_on_data(train_sub_data, train_name)
+            train_stats = evaluate_on_data(train_sub_data, train_name)
         else:
             train_name = 'train'
-            train_mof = evaluate_on_data(train_data, train_name)
-        dev_mof = evaluate_on_data(dev_data, 'dev')
+            train_stats = evaluate_on_data(train_data, train_name)
+        dev_stats = evaluate_on_data(dev_data, 'dev')
         log_str = '{}\tepoch {:2d}'.format(split_name, epoch)
         for stat, value in stats.items():
             if isinstance(value, float):
                 log_str += '\t{} {:.4f}'.format(stat, value)
             else:
                 log_str += '\t{} {}'.format(stat, value)
-        log_str += '\t{} mof {:.4f}\tdev mof {:.4f}'.format(train_name, train_mof, dev_mof)
+        # log_str += '\t{} '.format(train_name)
+        for stats in [train_stats, dev_stats]:
+            log_str += '\n'
+            for name, val in sorted(stats.items()):
+                log_str += ' {} {:.4f}'.format(name, val)
+        # log_str += '\t{} mof {:.4f}\tdev mof {:.4f}'.format(train_name, train_mof, dev_mof)
         logger.debug(log_str)
         models_by_epoch[epoch] = pickle.dumps(model)
-        dev_mof_by_epoch[epoch] = dev_mof
+        dev_mof_by_epoch[epoch] = dev_stats['dev_mof']
+
+        if args.model_output_path and epoch % 5 == 0:
+            os.makedirs(args.model_output_path, exist_ok=True)
+            model_fname = os.path.join(args.model_output_path, '{}_epoch-{}.pkl'.format(split_name, epoch))
+            print("writing model to {}".format(model_fname))
+            with open(model_fname, 'wb') as f:
+                pickle.dump(model, f)
 
     model.fit(train_data, use_labels=use_labels, callback_fn=callback_fn)
 
@@ -172,7 +204,10 @@ def make_data_splits(args):
             dimensions_per_feature_group=dimensions_per_feature_group,
             features_contain_background=features_contain_background,
             task_specific_steps=args.task_specific_steps,
+            annotate_background_with_previous=args.annotate_background_with_previous,
             use_secondary='related' in args.crosstask_training_data,
+            constraints_root='data/crosstask/crosstask_constraints',
+            load_constraints=True,
         )
         corpus._cache_features = True
         train_task_sets = args.crosstask_training_data
@@ -204,6 +239,7 @@ def make_data_splits(args):
                     for split, full, task_sets in split_names_and_full
                 )
     elif args.dataset == 'breakfast':
+        assert not args.annotate_background_with_previous
         if args.features == 'pca':
             max_components = 64
             assert args.pca_components_per_group == max_components
