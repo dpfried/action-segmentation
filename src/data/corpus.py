@@ -41,6 +41,8 @@ class Video(object):
 
         self._constraints = constraints
 
+        self._non_background_constraints = None
+
         assert name
 
         if remove_background:
@@ -97,8 +99,13 @@ class Video(object):
 
     @property
     def constraints(self):
-        if self._remove_background:
-            raise NotImplementedError("remove_background for constraints")
+        if self._remove_background and self._constraints is not None:
+            if self._non_background_constraints is None:
+                tnb = self._truncated_nonbackground_timesteps()
+                constraints = self._constraints[:self.n_frames()]
+                constraints = constraints[tnb]
+                self._non_background_constraints = constraints
+            return self._non_background_constraints
         return self._constraints
 
     def features(self):
@@ -552,6 +559,10 @@ class Datasplit(Dataset):
                 stats['comparison_mof_non_bg'] = comparison_stats['mof_non_bg']
                 stats['comparison_step_recall_non_bg'] = comparison_stats['step_recall_non_bg']
                 stats['comparison_mean_normed_levenshtein'] = comparison_stats['mean_normed_levenshtein']
+
+                stats['comparison_f1'] = comparison_stats['f1']
+                stats['comparison_f1_non_bg'] = comparison_stats['f1_non_bg']
+                stats['comparison_center_step_recall_non_bg'] = comparison_stats['step_recall_non_bg']
 
             stats_by_task[task] = accuracy.stat()
         return stats_by_task
