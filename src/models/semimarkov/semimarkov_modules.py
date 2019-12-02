@@ -89,7 +89,7 @@ class SemiMarkovModule(nn.Module):
         self.max_k = args.sm_max_span_length
         # self._learn_transitions = learn_transitions
 
-        self.merge_classes = merge_classes
+        self._merge_classes = merge_classes
         # if self.merge_classes is not None:
         #     self.inv_merge_classes = {}
         #     for sink, src in merge_classes.items():
@@ -106,6 +106,13 @@ class SemiMarkovModule(nn.Module):
     #     except:
     #         self._learn_transitions = True
     #         return self._learn_transitions
+
+    @property
+    def merge_classes(self):
+        if hasattr(self, '_merge_classes'):
+            return self._merge_classes
+        else:
+            return None
 
     def init_projector(self):
         if self.args.sm_feature_projection:

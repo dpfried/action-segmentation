@@ -1,7 +1,7 @@
 import copy
 import numpy as np
 import tqdm
-import itertools
+import time
 
 import torch
 from data.corpus import Datasplit
@@ -177,6 +177,7 @@ class SemiMarkovModel(Model):
         K = self.args.sm_max_span_length
 
         for epoch in range(self.args.epochs):
+            start_time = time.time()
             # call here since we may set eval in callback_fn
             self.model.train()
             losses = []
@@ -187,7 +188,8 @@ class SemiMarkovModel(Model):
             num_videos = 0
             train_nll = 0
             train_kl = 0
-            for batch_ix, batch in enumerate(tqdm.tqdm(loader, ncols=80)):
+            # for batch_ix, batch in enumerate(tqdm.tqdm(loader, ncols=80)):
+            for batch_ix, batch in enumerate(loader):
                 if self.args.train_limit and batch_ix >= self.args.train_limit:
                     break
                 # if self.args.cuda:
@@ -265,14 +267,15 @@ class SemiMarkovModel(Model):
                         gparam_norm = sum([p.grad.norm()**2 for p in self.model.parameters()
                                            if p.requires_grad and p.grad is not None]).item()**0.5
                         log_str = 'Epoch: %02d, Batch: %03d/%03d, |Param|: %.6f, |GParam|: %.2f, lr: %.2E, ' + \
-                                  'loss: %.4f, recon: %.4f, kl: %.4f, recon_bound: %.2f'
-                        tqdm.tqdm.write(log_str %
-                                        (epoch, batch_ix, len(loader), param_norm, gparam_norm,
-                                         optimizer.param_groups[0]["lr"],
-                                         (train_nll + train_kl) / num_videos,
-                                         train_nll / num_frames,
-                                         train_kl / num_frames,
-                                         (train_nll + train_kl) / num_frames))
+                                  'loss: %.4f, recon: %.4f, kl: %.4f, recon_bound: %.2f, Throughput: %.2f vid / sec'
+                        print(log_str %
+                              (epoch, batch_ix, len(loader), param_norm, gparam_norm,
+                               optimizer.param_groups[0]["lr"],
+                               (train_nll + train_kl) / num_videos,
+                               train_nll / num_frames,
+                               train_kl / num_frames,
+                               (train_nll + train_kl) / num_frames,
+                              num_videos / (time.time() - start_time)))
                     if self.args.max_grad_norm is not None:
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.max_grad_norm)
 
@@ -292,7 +295,8 @@ class SemiMarkovModel(Model):
         predictions = {}
         # for some reason, EOM errors happen more frequently in viterbi, so reduce batch size
         loader = make_data_loader(self.args, test_data, shuffle=False, batch_by_task=True, batch_size=self.args.batch_size // 2)
-        for batch in tqdm.tqdm(loader, ncols=80):
+        # for batch in tqdm.tqdm(loader, ncols=80):
+        for batch in loader:
             features = batch['features']
             task_indices = batch['task_indices']
             lengths = batch['lengths']

@@ -4,6 +4,7 @@ import pprint
 from collections import defaultdict, Counter
 import editdistance
 
+
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
@@ -60,10 +61,12 @@ class Accuracy(object):
 
         self._predicted_labels_per_video = []
         self._gt_labels_per_video = []
+        self._gt_labels_multi_per_video = []
 
         self._predicted_labels = None
         self._gt_labels_subset = None
         self._gt_labels = None
+        self._gt_labels_multi = None
         self._boundaries = None
         # all frames used for alg without any subsampling technique
         self._indices = None
@@ -72,7 +75,14 @@ class Accuracy(object):
         self._frames_true_pr = 0
         self._average_score = 0
         self._processed_number = 0
-        self._classes_precision = {}
+        # self._classes_precision = {}
+        self._precision = None
+        self._recall = None
+        self._precision_without_bg = None
+        self._recall_without_bg = None
+        self._precision = None
+        self._recall = None
+        self._classes_recall = {}
         self._classes_MoF = {}
         self._classes_IoU = {}
         # keys - gt, values - pr
@@ -115,13 +125,15 @@ class Accuracy(object):
             self._predicted_rle_per_video.append(rle)
         else:
             # ground truth can have multiple labels per timestep; deduplicate
-            labels = self._single_timestep_gt_labels(labels)
-            rle = run_length_encode(labels)
+            labels_single = self._single_timestep_gt_labels(labels)
+            rle_single = run_length_encode(labels_single)
             self._gt_labels = None
+            self._gt_labels_multi = None
             self._gt_labels_subset = None
             self._indices = None
-            self._gt_labels_per_video.append(labels)
-            self._gt_rle_per_video.append(rle)
+            self._gt_labels_per_video.append(labels_single)
+            self._gt_labels_multi_per_video.append(labels)
+            self._gt_rle_per_video.append(rle_single)
 
     def add_gt_labels(self, labels):
         self._add_labels(labels, is_predicted=False)
@@ -153,8 +165,11 @@ class Accuracy(object):
 
     def _set_gt_labels(self):
         labels = [x for xs in self._gt_labels_per_video for x in xs]
+        labels_multi = [x for xs in self._gt_labels_multi_per_video for x in xs]
         self._gt_labels = np.array(labels)
         self._gt_labels_subset = self._gt_labels[:]
+        self._gt_labels_multi = labels_multi
+        assert len(labels) == len(labels_multi)
         self._indices = list(range(len(self._gt_labels)))
 
     def _set_predicted_labels(self):
@@ -166,6 +181,12 @@ class Accuracy(object):
         if self._gt_labels is None:
             self._set_gt_labels()
         return self._gt_labels
+
+    @property
+    def gt_labels_multi(self):
+        if self._gt_labels_multi is None:
+            self._set_gt_labels()
+        return self._gt_labels_multi
 
     @property
     def gt_labels_subset(self):
@@ -327,7 +348,9 @@ class Accuracy(object):
                                 num_pr_labels))
             self._logger.debug('Correspondences: segmentation to gt : '
                                + str([('%d: %d' % (value[0], key)) for (key, value) in
-                                      sorted(self._gt2cluster.items(), key=lambda x: x[-1])]))
+                                      sorted(self._gt2cluster.items(), key=lambda x: x[-1])
+                                      if len(value) > 0
+                                      ]))
         return
 
     def levenshtein(self, gt2cluster=None):
@@ -372,11 +395,16 @@ class Accuracy(object):
         non_background_step_match = 0.0
         non_background_step_total = 0.0
 
+        center_step_match = 0.0
+        non_background_center_step_match = 0.0
+
         assert len(self._predicted_labels_per_video) == len(self._gt_labels_per_video)
         for gt_labels, pred_labels in zip(self._gt_labels_per_video, self._predicted_labels_per_video):
             pred_labels = np.asarray(pred_labels)
             background_timesteps = [lab in self._corpus._background_indices for lab in gt_labels]
-            background_remapped_labels = set(singleton_lookup(gt2cluster, label) for label in self._corpus._background_indices if label in gt2cluster)
+            background_remapped_labels = set(singleton_lookup(gt2cluster, label)
+                                             for label in self._corpus._background_indices
+                                             if len(gt2cluster[label]) > 0)
             gt_labels_remapped = np.asarray([gt2cluster[gt_label] for gt_label in gt_labels])
 
             for label in np.unique(gt_labels_remapped):
@@ -387,13 +415,21 @@ class Accuracy(object):
                 if len(pred_indices) == 0:
                     continue
                 pred_index = np.random.choice(pred_indices)
+                # center_index = pred_indices[len(pred_indices) // 2]
+                center_index = min(pred_indices, key=lambda x:abs(x-(pred_indices[0]+pred_indices[-1])/2))
                 if gt_labels_remapped[pred_index] == label:
                     step_match += 1
                     if label not in background_remapped_labels:
                         non_background_step_match += 1
+                if gt_labels_remapped[center_index] == label:
+                    center_step_match += 1
+                    if label not in background_remapped_labels:
+                        non_background_center_step_match += 1
         results = ({
             'single_step_recall': np.array([step_match, step_total]),
             'step_recall_non_bg': np.array([non_background_step_match, non_background_step_total]),
+            'center_step_recall': np.array([center_step_match, step_total]),
+            'center_step_recall_non_bg': np.array([non_background_center_step_match, non_background_step_total]),
         })
         if self._verbose:
             logger.debug("Single step recall stats")
@@ -420,7 +456,8 @@ class Accuracy(object):
         else:
             self._full_predicted_labels = self.predicted_labels
 
-        self._classes_precision = {}
+        background_clusters = [self._gt2cluster[label]  for label in self._corpus._background_indices]
+
         self._classes_MoF = {}
         self._classes_IoU = {}
         excluded_total = 0
@@ -442,12 +479,39 @@ class Accuracy(object):
 
             self._classes_MoF[gt_label] = [true_defined_frame_n, np.sum(gt_mask)]
             self._classes_IoU[gt_label] = [true_defined_frame_n, union]
-            self._classes_precision[gt_label] = [true_defined_frame_n, predicted]
+            # self._classes_precision[gt_label] = [true_defined_frame_n, predicted]
 
             if gt_label in self.exclude:
                 excluded_total += np.sum(gt_mask)
             else:
                 self._frames_true_pr += true_defined_frame_n
+
+        assert len(self.gt_labels_multi) == len(self._full_predicted_labels)
+
+        self._precision = np.zeros(2)
+        self._recall = np.zeros(2)
+
+        self._precision_without_bg = np.zeros(2)
+        self._recall_without_bg = np.zeros(2)
+
+        for gt_labels_t, pred_label_t in zip(self.gt_labels_multi, self._full_predicted_labels):
+            gt_clusters_t = [self._gt2cluster[gt_label] for gt_label in gt_labels_t]
+            self._recall[1] += len(gt_labels_t)
+            self._precision[1] += 1
+            if pred_label_t in gt_clusters_t:
+                self._recall[0] += 1
+                self._precision[0] += 1
+
+            for gt_label in gt_labels_t:
+                if gt_label not in self._corpus._background_indices:
+                    self._recall_without_bg[1] += 1
+
+            if pred_label_t not in background_clusters:
+                self._precision_without_bg[1] += 1
+                if pred_label_t in gt_clusters_t:
+                    # true positives
+                    self._recall_without_bg[0] += 1
+                    self._precision_without_bg[0] += 1
 
         self._frames_overall = len(self.gt_labels) - excluded_total
         return self._frames_overall
@@ -463,8 +527,8 @@ class Accuracy(object):
         non_bkg_classes = 0
         for key, val in self._classes_MoF.items():
             true_frames, all_frames = val
-            tf_2, pred_frames = self._classes_precision[key]
-            assert tf_2 == true_frames
+            # tf_2, pred_frames = self._classes_precision[key]
+            # assert tf_2 == true_frames
             if self._verbose:
                 log_str = 'mof label %d: %f  %d / %d' % (key, true_frames / all_frames,
                                                         true_frames, all_frames)
@@ -488,11 +552,26 @@ class Accuracy(object):
         self._return['mof'] = [self._frames_true_pr, self._frames_overall]
         self._return['mof_bg'] = [total_true, total]
         self._return['mof_non_bg'] = [total_true_non_bkg, total_non_bkg]
+        self._return['precision'] = self._precision
+        self._return['recall'] = self._recall
+        precision = float(self._precision[0]) / self._precision[1]
+        recall = float(self._recall[0]) / self._recall[1]
+        self._return['f1'] = np.array([(2 * precision * recall) / (precision + recall), 1.0])
+
+        self._return['precision_non_bg'] = self._precision_without_bg
+        self._return['recall_non_bg'] = self._recall_without_bg
+        precision_no_bg = float(self._precision_without_bg[0]) / self._precision_without_bg[1]
+        recall_no_bg = float(self._recall_without_bg[0]) / self._recall_without_bg[1]
+        self._return['f1_non_bg'] = np.array([(2 * precision_no_bg * recall_no_bg) / (precision_no_bg + recall_no_bg), 1.0])
+
         if self._verbose:
             logger.debug('average class mof: %f' % average_class_mof)
             logger.debug('mof with bg: %f' % (total_true / total))
             logger.debug('average class mof without bg: %f' % average_class_mof_non_bkg)
             logger.debug('mof without bg: %f' % (total_true_non_bkg / total_non_bkg))
+
+            logger.debug('f1 with bg: %f' % self._return['f1'][0])
+            logger.debug('f1 without bg: %f' % self._return['f1_non_bg'][0])
 
     def iou_classes(self):
         average_class_iou = 0

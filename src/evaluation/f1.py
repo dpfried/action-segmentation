@@ -60,6 +60,8 @@ class F1Score:
     def _pr2gt_convert(self):
         new_pr = np.asarray(self.pr).copy()
         for gt_label, pr_label in self.gt2pr.items():
+            if len(pr_label) == 0:
+                continue
             m = np.sum(self.pr == pr_label[0])
             new_pr[self.pr == pr_label[0]] = gt_label
         self.pr = np.asarray(new_pr).copy()

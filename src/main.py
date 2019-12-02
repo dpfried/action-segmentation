@@ -29,6 +29,7 @@ CLASSIFIERS = {
 def add_serialization_args(parser):
     group = parser.add_argument_group('serialization')
     group.add_argument('--model_output_path')
+    group.add_argument('--model_input_path')
 
 
 def add_data_args(parser):
@@ -55,6 +56,9 @@ def add_data_args(parser):
 
     group.add_argument('--no_merge_classes', action='store_true', help="")
 
+    group.add_argument('--force_optimal_assignment', action='store_true', help="force optimal assignment to maximize MoF")
+
+
 
 def add_classifier_args(parser):
     group = parser.add_argument_group('classifier')
@@ -72,6 +76,10 @@ def test(args, model: Model, test_data: Datasplit, test_data_name: str, verbose=
         assert args.training == 'unsupervised'
         # if we're constraining the transitions to be the canonical order in the semimarkov, we don't need oracle reassignment
         optimal_assignment = not (args.classifier == 'semimarkov' and args.sm_constrain_transitions)
+        if 'train' in args.sm_constrain_with_narration or 'test' in args.sm_constrain_with_narration:
+            optimal_assignment = False
+    if args.force_optimal_assignment:
+        optimal_assignment = True
     predictions_by_video = model.predict(test_data)
     prediction_function = lambda video: predictions_by_video[video.name]
     stats = test_data.accuracy_corpus(
@@ -83,6 +91,16 @@ def test(args, model: Model, test_data: Datasplit, test_data_name: str, verbose=
     )
     return stats
 
+
+def make_model_path(path, split_name):
+    if path.endswith('.pkl'):
+        return path
+    else:
+        # is directory
+        return os.path.join(path, '{}.pkl'.format(split_name))
+
+STAT_KEYS = ['mof', 'mof_non_bg', 'step_recall_non_bg', 'mean_normed_levenshtein', 'center_step_recall_non_bg', 'f1', 'f1_non_bg']
+DISPLAY_STAT_KEYS = ['f1', 'f1_non_bg', 'center_step_recall_non_bg', 'mean_normed_levenshtein']
 
 def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=False, train_sub_data=None):
     model = CLASSIFIERS[args.classifier].from_args(args, train_data)
@@ -98,24 +116,31 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
     def evaluate_on_data(data, name):
         stats_by_name = test(args, model, data, name, verbose=verbose)
 
-        all_mof = np.array([stats['mof'] for stats in stats_by_name.values()])
-        sum_mof = all_mof.sum(axis=0)
+        # all_mof = np.array([stats['mof'] for stats in stats_by_name.values()])
+        # sum_mof = all_mof.sum(axis=0)
+        #
+        # all_mof_non_bg = np.array([stats['mof_non_bg'] for stats in stats_by_name.values()])
+        # sum_mof_non_bg = all_mof_non_bg.sum(axis=0)
+        #
+        # all_step_recall_non_bg = np.array([stats['step_recall_non_bg'] for stats in stats_by_name.values()])
+        # sum_step_recall_non_bg = all_step_recall_non_bg.sum(axis=0)
+        #
+        # all_leven = np.array([stats['mean_normed_levenshtein'] for stats in stats_by_name.values()])
+        # sum_leven = all_leven.sum(axis=0)
 
-        all_mof_non_bg = np.array([stats['mof_non_bg'] for stats in stats_by_name.values()])
-        sum_mof_non_bg = all_mof_non_bg.sum(axis=0)
+        d = {}
+        for key in STAT_KEYS:
+            all_stats = np.array([stats[key] for stats in stats_by_name.values()])
+            sum_stats = all_stats.sum(axis=0)
+            d['{}_{}'.format(name, key)] = float(sum_stats[0]) / sum_stats[1]
+        return d
 
-        all_step_recall_non_bg = np.array([stats['step_recall_non_bg'] for stats in stats_by_name.values()])
-        sum_step_recall_non_bg = all_step_recall_non_bg.sum(axis=0)
-
-        all_leven = np.array([stats['mean_normed_levenshtein'] for stats in stats_by_name.values()])
-        sum_leven = all_leven.sum(axis=0)
-
-        return {
-            '{}_mof'.format(name): float(sum_mof[0]) / sum_mof[1],
-            '{}_mof_non_bg'.format(name): float(sum_mof_non_bg[0]) / sum_mof_non_bg[1],
-            '{}_step_recall_non_bg'.format(name): float(sum_step_recall_non_bg[0]) / sum_step_recall_non_bg[1],
-            '{}_mean_normed_levenshtein'.format(name): float(sum_leven[0]) / sum_leven[1],
-        }
+        # return {
+        #     '{}_mof'.format(name): float(sum_mof[0]) / sum_mof[1],
+        #     '{}_mof_non_bg'.format(name): float(sum_mof_non_bg[0]) / sum_mof_non_bg[1],
+        #     '{}_step_recall_non_bg'.format(name): float(sum_step_recall_non_bg[0]) / sum_step_recall_non_bg[1],
+        #     '{}_mean_normed_levenshtein'.format(name): float(sum_leven[0]) / sum_leven[1],
+        # }
 
     models_by_epoch = {}
     dev_mof_by_epoch = {}
@@ -168,7 +193,7 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
 
     if args.model_output_path:
         os.makedirs(args.model_output_path, exist_ok=True)
-        model_fname = os.path.join(args.model_output_path, '{}.pkl'.format(split_name))
+        model_fname = make_model_path(args.model_output_path, split_name)
         print("writing model to {}".format(model_fname))
         with open(model_fname, 'wb') as f:
             pickle.dump(best_model, f)
@@ -300,7 +325,34 @@ if __name__ == "__main__":
 
     for split_name, (train_data, train_sub_data, test_data) in make_data_splits(args).items():
         print(split_name)
-        model = train(args, train_data, test_data, split_name, train_sub_data=train_sub_data)
+        if args.model_input_path:
+            model_path = make_model_path(args.model_input_path, split_name)
+            print("loading model from {}".format(model_path))
+            with open(model_path, 'rb') as f:
+                model = pickle.load(f)
+            if vars(args) != vars(model.args):
+                print("warning: command line args and serialized model args differ:")
+                cmd_d = vars(args)
+                ser_d = vars(model.args)
+                for key in set(cmd_d) | set(ser_d):
+                    if key == 'model_input_path' or key == 'model_output_path':
+                        continue
+                    if key not in ser_d or key not in cmd_d or ser_d[key] != cmd_d[key]:
+                        print("{}: {} != {}".format(key, cmd_d.get(key, "<NP>"), ser_d.get(key, "<NP>")))
+
+                print("setting model args to serialized args")
+            model.args = args
+            try:
+                model.model.eval()
+                if args.cuda:
+                    model.model.cuda()
+                else:
+                    model.model.cpu()
+            except Exception as e:
+                print(e)
+
+        else:
+            model = train(args, train_data, test_data, split_name, train_sub_data=train_sub_data)
 
         stats_by_task = test(args, model, test_data, split_name)
         stats_by_split_by_task[split_name] = {}
@@ -347,6 +399,11 @@ if __name__ == "__main__":
     print("averaged across tasks:")
     pprint.pprint(divided_averaged_across_tasks)
     print()
-    print("averaged across splits:")
-    pprint.pprint(sum_within_split_averaged_across_splits)
+    # print("averaged across splits:")
+    # pprint.pprint(sum_within_split_averaged_across_splits)
 
+    print(', '.join(STAT_KEYS))
+    print(', '.join('{:.4f}'.format(divided_averaged_across_tasks[key]) for key in STAT_KEYS))
+
+    print(', '.join(DISPLAY_STAT_KEYS))
+    print(', '.join('{:.4f}'.format(divided_averaged_across_tasks[key]) for key in DISPLAY_STAT_KEYS))
