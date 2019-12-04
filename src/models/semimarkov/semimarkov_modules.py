@@ -612,16 +612,18 @@ class SemiMarkovModule(nn.Module):
             parts = SemiMarkovCRF.struct.to_parts(eos_spans_mapped, (eos_C, K),
                                                   lengths=eos_lengths).type_as(scores)
 
-            # this maximizes p(x, y)
-            d = parts.dim()
-            batch_dims = range(d - len(dist.event_shape))
-            log_likelihood = dist.struct().score(
-                dist.log_potentials,
-                parts.type_as(dist.log_potentials),
-                batch_dims=batch_dims,
-            ).mean()
-            # this maximizes p(y | x)
-            # log_likelihood = dist.log_prob(parts).mean()
+            if self.args.sm_train_discriminatively:
+                # this maximizes p(y | x)
+                log_likelihood = dist.log_prob(parts).mean()
+            else:
+                # this maximizes p(x, y)
+                d = parts.dim()
+                batch_dims = range(d - len(dist.event_shape))
+                log_likelihood = dist.struct().score(
+                    dist.log_potentials,
+                    parts.type_as(dist.log_potentials),
+                    batch_dims=batch_dims,
+                ).mean()
         else:
             log_likelihood = dist.partition.mean()
         return log_likelihood

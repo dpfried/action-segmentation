@@ -29,6 +29,82 @@ class Encoder(nn.Module):
         encoded, _ = nn.utils.rnn.pad_packed_sequence(encoded_packed, batch_first=True, padding_value=output_padding_value)
         return encoded
 
+class SequentialPredictConstraints(Model):
+    @classmethod
+    def add_args(cls, parser):
+        pass
+
+    @classmethod
+    def from_args(cls, args, train_data: Datasplit):
+        return cls(args, train_data)
+
+
+    def __init__(self, args, train_data: Datasplit):
+        from data.crosstask import CrosstaskDatasplit
+        assert isinstance(train_data, CrosstaskDatasplit)
+
+        self.args = args
+        self.n_classes = train_data._corpus.n_classes
+        self.remove_background = train_data.remove_background
+
+        self.ordered_nonbackground_indices_by_task = {
+            task_id: [train_data.corpus._index(step) for step in task.steps]
+            for task_id, task in train_data._tasks_by_id.items()
+        }
+
+        self.background_indices_by_task = {
+            task_id: list(sorted(ix for ix in train_data.corpus.indices_by_task(task_id)
+                                 if ix in set(train_data.corpus._background_indices)))
+            for task_id in train_data._tasks_by_id.keys()
+        }
+        assert all(len(v) == 1 for v in self.background_indices_by_task.values()), self.background_indices_by_task
+
+        if train_data.remove_background:
+            self.canonical = SequentialCanonicalBaseline(args, train_data)
+        else:
+            self.canonical = None
+
+    def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
+        pass
+
+    def predict(self, test_data: Datasplit):
+        predictions = {}
+        loader = make_data_loader(self.args, test_data, batch_by_task=False, shuffle=False, batch_size=1)
+
+
+        for batch in loader:
+            features = batch['features'].squeeze(0)
+            num_timesteps = features.size(0)
+
+            tasks = batch['task_name']
+            assert len(tasks) == 1
+            task = next(iter(tasks))
+            videos = batch['video_name']
+            assert len(videos) == 1
+            video = next(iter(videos))
+
+            # constraints: T x K
+            constraints = batch['constraints'].squeeze(0)
+            assert constraints.size(0) == num_timesteps
+
+            step_indices = self.ordered_nonbackground_indices_by_task[task]
+            background_indices = self.background_indices_by_task[task]
+
+            active_step = constraints.argmax(dim=1)
+            active_step.apply_(lambda ix: step_indices[ix])
+            if not test_data.remove_background:
+                active_step[constraints.sum(dim=1) == 0] = background_indices[0]
+                predictions[video] = active_step.cpu().numpy()
+            else:
+                preds = active_step.cpu().numpy()
+                zero_indices = (constraints.sum(dim=1) == 0).nonzero().flatten()
+                baseline_preds = self.canonical.predict_single(task, num_timesteps)
+                for ix in zero_indices:
+                    preds[ix] = baseline_preds[ix]
+                predictions[video] = preds
+                # just arbitrarily choose a background index, they will get canonicalized anyway
+        return predictions
+
 class SequentialCanonicalBaseline(Model):
     @classmethod
     def add_args(cls, parser):
@@ -36,7 +112,7 @@ class SequentialCanonicalBaseline(Model):
 
     @classmethod
     def from_args(cls, args, train_data: Datasplit):
-        return SequentialCanonicalBaseline(args, train_data)
+        return cls(args, train_data)
 
     def __init__(self, args, train_data: Datasplit):
         from data.crosstask import CrosstaskDatasplit
@@ -154,7 +230,7 @@ class SequentialDiscriminative(Model):
 
     @classmethod
     def from_args(cls, args, train_data: Datasplit):
-        return SequentialDiscriminative(args, train_data)
+        return cls(args, train_data)
 
     def __init__(self, args, train_data: Datasplit):
         self.args = args

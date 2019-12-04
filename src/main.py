@@ -11,10 +11,13 @@ from data.breakfast import BreakfastCorpus
 from data.corpus import Datasplit
 from data.crosstask import CrosstaskCorpus
 from models.framewise import FramewiseGaussianMixture, FramewiseDiscriminative, FramewiseBaseline
-from models.sequential import SequentialDiscriminative, SequentialCanonicalBaseline
+from models.sequential import SequentialDiscriminative, SequentialCanonicalBaseline, SequentialPredictConstraints
 from models.model import Model, add_training_args
 from models.semimarkov.semimarkov import SemiMarkovModel
 from utils.logger import logger
+
+STAT_KEYS = ['mof', 'mof_non_bg', 'step_recall_non_bg', 'mean_normed_levenshtein', 'center_step_recall_non_bg', 'f1', 'f1_non_bg', 'pred_background', 'iou_multi_non_bg']
+DISPLAY_STAT_KEYS = ['f1', 'f1_non_bg', 'center_step_recall_non_bg', 'mean_normed_levenshtein', 'pred_background', 'iou_multi_non_bg']
 
 CLASSIFIERS = {
     'framewise_discriminative': FramewiseDiscriminative,
@@ -23,6 +26,7 @@ CLASSIFIERS = {
     'semimarkov': SemiMarkovModel,
     'sequential_discriminative': SequentialDiscriminative,
     'sequential_canonical_baseline': SequentialCanonicalBaseline,
+    'sequential_predict_constraints': SequentialPredictConstraints,
 }
 
 
@@ -30,6 +34,14 @@ def add_serialization_args(parser):
     group = parser.add_argument_group('serialization')
     group.add_argument('--model_output_path')
     group.add_argument('--model_input_path')
+
+
+def add_misc_args(parser):
+    group = parser.add_argument_group('miscellaneous')
+    group.add_argument('--compare_to_prediction_folder', help='root folder containing *_pred.npy and *_true.npy prediction files (for comparison)')
+    group.add_argument('--compare_only',
+                       action='store_true',
+                       help="skip everything to do with models and just evaluate these serialized predictions")
 
 
 def add_data_args(parser):
@@ -47,8 +59,6 @@ def add_data_args(parser):
 
     group.add_argument('--mix_tasks', action='store_true', help='train on all tasks simultaneously')
 
-    group.add_argument('--compare_to_prediction_folder', help='root folder containing *_pred.npy and *_true.npy prediction files (for comparison)')
-
     group.add_argument('--frame_subsample', type=int, default=1, help="interval to subsample frames at (e.g. 10 takes every 10th frame)")
 
     group.add_argument('--task_specific_steps', action='store_true', help="")
@@ -62,7 +72,7 @@ def add_data_args(parser):
 
 def add_classifier_args(parser):
     group = parser.add_argument_group('classifier')
-    group.add_argument('--classifier', required=True, choices=CLASSIFIERS.keys())
+    group.add_argument('--classifier', choices=CLASSIFIERS.keys())
     group.add_argument('--training', choices=['supervised', 'unsupervised'], default='supervised')
     group.add_argument('--cuda', action='store_true')
     for name, cls in CLASSIFIERS.items():
@@ -80,8 +90,11 @@ def test(args, model: Model, test_data: Datasplit, test_data_name: str, verbose=
             optimal_assignment = False
     if args.force_optimal_assignment:
         optimal_assignment = True
-    predictions_by_video = model.predict(test_data)
-    prediction_function = lambda video: predictions_by_video[video.name]
+    if model is not None:
+        predictions_by_video = model.predict(test_data)
+        prediction_function = lambda video: predictions_by_video[video.name]
+    else:
+        prediction_function = None
     stats = test_data.accuracy_corpus(
         optimal_assignment,
         prediction_function,
@@ -98,9 +111,6 @@ def make_model_path(path, split_name):
     else:
         # is directory
         return os.path.join(path, '{}.pkl'.format(split_name))
-
-STAT_KEYS = ['mof', 'mof_non_bg', 'step_recall_non_bg', 'mean_normed_levenshtein', 'center_step_recall_non_bg', 'f1', 'f1_non_bg']
-DISPLAY_STAT_KEYS = ['f1', 'f1_non_bg', 'center_step_recall_non_bg', 'mean_normed_levenshtein']
 
 def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=False, train_sub_data=None):
     model = CLASSIFIERS[args.classifier].from_args(args, train_data)
@@ -313,6 +323,7 @@ if __name__ == "__main__":
     add_data_args(parser)
     add_classifier_args(parser)
     add_training_args(parser)
+    add_misc_args(parser)
     args = parser.parse_args()
 
     print(' '.join(sys.argv))
@@ -325,34 +336,38 @@ if __name__ == "__main__":
 
     for split_name, (train_data, train_sub_data, test_data) in make_data_splits(args).items():
         print(split_name)
-        if args.model_input_path:
-            model_path = make_model_path(args.model_input_path, split_name)
-            print("loading model from {}".format(model_path))
-            with open(model_path, 'rb') as f:
-                model = pickle.load(f)
-            if vars(args) != vars(model.args):
-                print("warning: command line args and serialized model args differ:")
-                cmd_d = vars(args)
-                ser_d = vars(model.args)
-                for key in set(cmd_d) | set(ser_d):
-                    if key == 'model_input_path' or key == 'model_output_path':
-                        continue
-                    if key not in ser_d or key not in cmd_d or ser_d[key] != cmd_d[key]:
-                        print("{}: {} != {}".format(key, cmd_d.get(key, "<NP>"), ser_d.get(key, "<NP>")))
-
-                print("setting model args to serialized args")
-            model.args = args
-            try:
-                model.model.eval()
-                if args.cuda:
-                    model.model.cuda()
-                else:
-                    model.model.cpu()
-            except Exception as e:
-                print(e)
-
+        if args.compare_only:
+            assert args.compare_to_prediction_folder
+            model = None
         else:
-            model = train(args, train_data, test_data, split_name, train_sub_data=train_sub_data)
+            if args.model_input_path:
+                model_path = make_model_path(args.model_input_path, split_name)
+                print("loading model from {}".format(model_path))
+                with open(model_path, 'rb') as f:
+                    model = pickle.load(f)
+                if vars(args) != vars(model.args):
+                    print("warning: command line args and serialized model args differ:")
+                    cmd_d = vars(args)
+                    ser_d = vars(model.args)
+                    for key in set(cmd_d) | set(ser_d):
+                        if key == 'model_input_path' or key == 'model_output_path':
+                            continue
+                        if key not in ser_d or key not in cmd_d or ser_d[key] != cmd_d[key]:
+                            print("{}: {} != {}".format(key, cmd_d.get(key, "<NP>"), ser_d.get(key, "<NP>")))
+
+                    print("setting model args to serialized args")
+                model.args = args
+                try:
+                    model.model.eval()
+                    if args.cuda:
+                        model.model.cuda()
+                    else:
+                        model.model.cpu()
+                except Exception as e:
+                    print(e)
+
+            else:
+                model = train(args, train_data, test_data, split_name, train_sub_data=train_sub_data)
 
         stats_by_task = test(args, model, test_data, split_name)
         stats_by_split_by_task[split_name] = {}
@@ -402,8 +417,15 @@ if __name__ == "__main__":
     # print("averaged across splits:")
     # pprint.pprint(sum_within_split_averaged_across_splits)
 
+    stat_dict = divided_averaged_across_tasks
+
     print(', '.join(STAT_KEYS))
-    print(', '.join('{:.4f}'.format(divided_averaged_across_tasks[key]) for key in STAT_KEYS))
+    print(', '.join('{:.4f}'.format(stat_dict[key]) for key in STAT_KEYS))
 
     print(', '.join(DISPLAY_STAT_KEYS))
-    print(', '.join('{:.4f}'.format(divided_averaged_across_tasks[key]) for key in DISPLAY_STAT_KEYS))
+    print(', '.join('{:.4f}'.format(stat_dict[key]) for key in DISPLAY_STAT_KEYS))
+
+    if any(stat.startswith('compare_') for stat in stat_dict):
+        compare_keys = ['comparison_{}'.format(key) for key in DISPLAY_STAT_KEYS]
+        print(', '.join(compare_keys))
+        print(', '.join('{:.4f}'.format(stat_dict[key]) for key in compare_keys))

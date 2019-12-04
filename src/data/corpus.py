@@ -2,6 +2,7 @@
 
 import os
 import copy
+import json
 
 import random
 import numpy as np
@@ -393,6 +394,18 @@ class Datasplit(Dataset):
         """Calculate metrics as well with previous correspondences between
         gt labels and output labels"""
         stats_by_task = {}
+
+        if compare_to_folder is not None:
+            task_mapping = {}
+            if os.path.exists(os.path.join(compare_to_folder, "y_true.json")):
+                with open(os.path.join(compare_to_folder, "y_true.json")) as f:
+                    y_true_all = json.load(f)
+                with open(os.path.join(compare_to_folder, "y_pred.json")) as f:
+                    y_pred_all = json.load(f)
+            else:
+                y_true_all = None
+                y_pred_all = None
+
         for task in self._videos_by_task:
             if verbose:
                 logger.debug("computing accuracy for task {}".format(task))
@@ -410,11 +423,13 @@ class Datasplit(Dataset):
             # long_gt_onhe0 = []
             self.return_stat = {}
 
-            if compare_to_folder is not None:
-                task_mapping = {}
-
             def load_predictions(video_name):
-                if os.path.exists(os.path.join(compare_to_folder, "{}_y_true.npy".format(video_name))):
+                if y_true_all is not None:
+                    return {
+                        'y_true': np.array(y_true_all[str(task)][video_name]),
+                        'y_pred': np.array(y_pred_all[str(task)][video_name]),
+                    }
+                elif os.path.exists(os.path.join(compare_to_folder, "{}_y_true.npy".format(video_name))):
                     y_true = np.load(os.path.join(compare_to_folder, "{}_y_true.npy".format(video_name)))
                     y_pred = np.load(os.path.join(compare_to_folder, "{}_y_pred.npy".format(video_name)))
                     return {
@@ -422,7 +437,6 @@ class Datasplit(Dataset):
                         'y_pred': y_pred,
                     }
                 else:
-                    import json
                     with open(os.path.join(compare_to_folder, "{}.json".format(video_name))) as f:
                         pred_data = json.load(f)
                         return {
@@ -434,32 +448,33 @@ class Datasplit(Dataset):
                 # long_gt += list(video._gt_with_0)
                 # long_gt_onhe0 += list(video._gt)
                 gt = list(video.gt())
-                pred = list(prediction_function(video))
-                if self.subsample != 1:
-                    # _data = self[(task, video_name)]
-                    # boundaries = _data['subsample_boundaries']
-                    # pred = list(accuracy._fulfill_segments_nondes(boundaries, pred, len(gt)))
-                    pred = list(np.array(pred + [pred[-1]]).repeat(self.subsample)[:len(gt)])
+                if prediction_function is not None:
+                    pred = list(prediction_function(video))
+                    if self.subsample != 1:
+                        # _data = self[(task, video_name)]
+                        # boundaries = _data['subsample_boundaries']
+                        # pred = list(accuracy._fulfill_segments_nondes(boundaries, pred, len(gt)))
+                        pred = list(np.array(pred + [pred[-1]]).repeat(self.subsample)[:len(gt)])
 
-                    assert len(gt) == len(pred), "{} != {}".format(len(gt), len(pred))
+                        assert len(gt) == len(pred), "{} != {}".format(len(gt), len(pred))
 
-                if self.corpus.annotate_background_with_previous:
-                    gt = [
-                        [self.canonicalize_background(ix) for ix in gt_t]
-                        for gt_t in gt
-                    ]
-                    pred = [self.canonicalize_background(ix) for ix in pred]
-                    # print("video: {}".format(video_name))
-                    # print("gt: {}".format([gt_t[0] for gt_t in gt]))
-                    # print("pred: {}".format(pred))
-                    # print("gt enum: {}".format(list(enumerate([gt_t[0] for gt_t in gt]))))
-                    # print("pred enum: {}".format(list(enumerate(pred))))
-                    # print()
+                    if self.corpus.annotate_background_with_previous:
+                        gt = [
+                            [self.canonicalize_background(ix) for ix in gt_t]
+                            for gt_t in gt
+                        ]
+                        pred = [self.canonicalize_background(ix) for ix in pred]
+                        # print("video: {}".format(video_name))
+                        # print("gt: {}".format([gt_t[0] for gt_t in gt]))
+                        # print("pred: {}".format(pred))
+                        # print("gt enum: {}".format(list(enumerate([gt_t[0] for gt_t in gt]))))
+                        # print("pred enum: {}".format(list(enumerate(pred))))
+                        # print()
 
-                accuracy.add_gt_labels(gt)
-                accuracy.add_predicted_labels(pred)
-                long_gt += gt
-                long_pr += pred
+                    accuracy.add_gt_labels(gt)
+                    accuracy.add_predicted_labels(pred)
+                    long_gt += gt
+                    long_pr += pred
 
                 if compare_to_folder is not None:
                     # break ties with background, or earlier steps
@@ -496,8 +511,12 @@ class Datasplit(Dataset):
                     compare_accuracy.add_gt_labels(gt)
                     compare_accuracy.add_predicted_labels(pred)
 
-            named_accuracies = [('model', accuracy)]
-
+            named_accuracies = []
+            if prediction_function is not None:
+                named_accuracies.append(('model', accuracy))
+                accuracy_to_return = accuracy
+            else:
+                accuracy_to_return = compare_accuracy
             if compare_to_folder is not None:
                 named_accuracies.append(('comparison: {}'.format(compare_to_folder), compare_accuracy))
 
@@ -534,22 +553,23 @@ class Datasplit(Dataset):
                 if verbose:
                     logger.debug('\n')
 
-            self.return_stat = accuracy.stat()
+            self.return_stat = accuracy_to_return.stat()
 
-            f1_score.set_gt(long_gt)
-            f1_score.set_pr(long_pr)
-            f1_score.set_gt2pr(self._gt2label)
-            # if opt.bg:
-            #     f1_score.set_exclude(-1)
-            f1_score.f1()
+            if prediction_function is not None:
+                f1_score.set_gt(long_gt)
+                f1_score.set_pr(long_pr)
+                f1_score.set_gt2pr(self._gt2label)
+                # if opt.bg:
+                #     f1_score.set_exclude(-1)
+                f1_score.f1()
 
-            for key, val in f1_score.stat().items():
-                self.return_stat[key] = val
+                for key, val in f1_score.stat().items():
+                    self.return_stat[key] = val
 
-            for video_name, video in self._videos_by_task[task].items():
-                video.segmentation[video.iter] = (prediction_function(video), self._label2gt)
+                for video_name, video in self._videos_by_task[task].items():
+                    video.segmentation[video.iter] = (prediction_function(video), self._label2gt)
 
-            stats = accuracy.stat()
+            stats = accuracy_to_return.stat()
             if compare_to_folder is not None:
                 comparison_stats = compare_accuracy.stat()
                 if verbose:
@@ -564,7 +584,9 @@ class Datasplit(Dataset):
                 stats['comparison_f1_non_bg'] = comparison_stats['f1_non_bg']
                 stats['comparison_center_step_recall_non_bg'] = comparison_stats['step_recall_non_bg']
 
-            stats_by_task[task] = accuracy.stat()
+                stats['comparison_pred_background'] = comparison_stats['pred_background']
+
+            stats_by_task[task] = accuracy_to_return.stat()
         return stats_by_task
 
     # def resume_segmentation(self):

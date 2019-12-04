@@ -72,6 +72,10 @@ class Accuracy(object):
         self._indices = None
 
         self._frames_overall = 0
+
+        self._true_background_frames = None
+        self._pred_background_frames = None
+
         self._frames_true_pr = 0
         self._average_score = 0
         self._processed_number = 0
@@ -82,9 +86,11 @@ class Accuracy(object):
         self._recall_without_bg = None
         self._precision = None
         self._recall = None
+
         self._classes_recall = {}
         self._classes_MoF = {}
         self._classes_IoU = {}
+        self._non_bg_IoU_multi = None
         # keys - gt, values - pr
         self.exclude = {}
 
@@ -494,22 +500,45 @@ class Accuracy(object):
         self._precision_without_bg = np.zeros(2)
         self._recall_without_bg = np.zeros(2)
 
+        self._true_background_frames = np.zeros(2)
+        self._pred_background_frames = np.zeros(2)
+
+        self._non_bg_IoU_multi = np.zeros(2)
+
         for gt_labels_t, pred_label_t in zip(self.gt_labels_multi, self._full_predicted_labels):
             gt_clusters_t = [self._gt2cluster[gt_label] for gt_label in gt_labels_t]
             self._recall[1] += len(gt_labels_t)
             self._precision[1] += 1
-            if pred_label_t in gt_clusters_t:
+
+            true_positive = pred_label_t in gt_clusters_t
+            if true_positive:
                 self._recall[0] += 1
                 self._precision[0] += 1
 
-            for gt_label in gt_labels_t:
-                if gt_label not in self._corpus._background_indices:
-                    self._recall_without_bg[1] += 1
+            self._true_background_frames[1] += 1
+            self._pred_background_frames[1] += 1
 
-            if pred_label_t not in background_clusters:
+            pred_background = False
+            if pred_label_t in background_clusters:
+                self._pred_background_frames[0] += 1
+                pred_background = True
+
+            is_background = False
+            if any(gt_label in self._corpus._background_indices for gt_label in gt_labels_t):
+                is_background = True
+                assert all(gt_label in self._corpus._background_indices for gt_label in gt_labels_t)
+
+            if (not is_background) or (not pred_background):
+                self._non_bg_IoU_multi[1] += 1
+                if true_positive:
+                    self._non_bg_IoU_multi[0] += 1
+
+            if is_background:
+                self._true_background_frames[0] += 1
+            else:
+                self._recall_without_bg[1] += len(gt_labels_t)
                 self._precision_without_bg[1] += 1
                 if pred_label_t in gt_clusters_t:
-                    # true positives
                     self._recall_without_bg[0] += 1
                     self._precision_without_bg[0] += 1
 
@@ -564,18 +593,24 @@ class Accuracy(object):
         recall_no_bg = float(self._recall_without_bg[0]) / self._recall_without_bg[1]
         self._return['f1_non_bg'] = np.array([(2 * precision_no_bg * recall_no_bg) / (precision_no_bg + recall_no_bg), 1.0])
 
+        self._return['true_background'] = self._true_background_frames
+        self._return['pred_background'] = self._pred_background_frames
+
+        self._return['iou_multi_non_bg'] = self._non_bg_IoU_multi
+
         if self._verbose:
             logger.debug('average class mof: %f' % average_class_mof)
             logger.debug('mof with bg: %f' % (total_true / total))
             logger.debug('average class mof without bg: %f' % average_class_mof_non_bkg)
             logger.debug('mof without bg: %f' % (total_true_non_bkg / total_non_bkg))
-
+            logger.debug('\n')
             logger.debug('f1 with bg: %f' % self._return['f1'][0])
             logger.debug('f1 without bg: %f' % self._return['f1_non_bg'][0])
 
     def iou_classes(self):
         average_class_iou = 0
         excluded_iou = 0
+        non_bg_iou = 0
         for key, val in self._classes_IoU.items():
             true_frames, union = val
             if self._verbose:
@@ -587,6 +622,8 @@ class Accuracy(object):
                 average_class_iou += true_frames / union
             else:
                 excluded_iou += true_frames / union
+            if key not in self._corpus._background_indices:
+                non_bg_iou += true_frames / union
         average_iou_without_exc = average_class_iou / \
                                   (len(self._classes_IoU) - len(self.exclude))
         average_iou_with_exc = (average_class_iou + excluded_iou) / \
@@ -595,6 +632,8 @@ class Accuracy(object):
                                len(self._classes_IoU) - len(self.exclude)]
         self._return['iou_bg'] = [average_class_iou + excluded_iou,
                                   len(self._classes_IoU) - len(self.exclude)]
+        # TODO: non-bg IOU
+        # figure out class averaging
         if self._verbose:
             logger.debug('average IoU: %f' % average_iou_without_exc)
             logger.debug('average IoU with bg: %f' % average_iou_with_exc)

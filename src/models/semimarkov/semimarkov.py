@@ -24,6 +24,8 @@ class SemiMarkovModel(Model):
         parser.add_argument('--sm_constrain_with_narration', choices=['train', 'test'], nargs='*', default=[])
         parser.add_argument('--sm_constrain_narration_weight', type=float, default=-1e4)
 
+        parser.add_argument('--sm_train_discriminatively', action='store_true')
+
     @classmethod
     def from_args(cls, args, train_data):
         n_classes = train_data.corpus.n_classes
@@ -329,31 +331,35 @@ class SemiMarkovModel(Model):
 
             addl_allowed_ends = self.make_additional_allowed_ends(tasks, lengths)
 
-            # TODO: figure out under which eval conditions use_mean_z should be False
-            pred_spans = self.model.viterbi(features, lengths, task_indices, add_eos=True, use_mean_z=True,
-                                            additional_allowed_ends_per_instance=addl_allowed_ends,
-                                            constraints=constraints_expanded)
-            pred_labels = semimarkov_utils.spans_to_labels(pred_spans)
+            def predict(constraints):
+                # TODO: figure out under which eval conditions use_mean_z should be False
+                pred_spans = self.model.viterbi(features, lengths, task_indices, add_eos=True, use_mean_z=True,
+                                                additional_allowed_ends_per_instance=addl_allowed_ends,
+                                                constraints=constraints)
+                pred_labels = semimarkov_utils.spans_to_labels(pred_spans)
 
-            # if self.args.sm_constrain_transitions:
-            #     all_pred_span_indices = [
-            #         [ix for ix, count in this_rle_spans]
-            #         for this_rle_spans in semimarkov_utils.rle_spans(pred_spans, lengths)
-            #     ]
-            #     for i, indices in enumerate(all_pred_span_indices):
-            #         remove_cons_dups = [ix for ix, group in itertools.groupby(indices)
-            #                             if not ix in test_data.corpus._background_indices]
-            #         non_bg_indices = [
-            #             ix for ix in test_data.corpus.indices_by_task(task)
-            #             if ix not in test_data.corpus._background_indices
-            #         ]
-            #         if len(remove_cons_dups) != len(non_bg_indices) and lengths[i].item() != len(remove_cons_dups):
-            #             print("deduped: {}, indices: {}, length {}".format(
-            #                 remove_cons_dups, non_bg_indices, lengths[i].item()
-            #             ))
-            #             # assert lengths[i].item() < len(non_bg_indices)
+                # if self.args.sm_constrain_transitions:
+                #     all_pred_span_indices = [
+                #         [ix for ix, count in this_rle_spans]
+                #         for this_rle_spans in semimarkov_utils.rle_spans(pred_spans, lengths)
+                #     ]
+                #     for i, indices in enumerate(all_pred_span_indices):
+                #         remove_cons_dups = [ix for ix, group in itertools.groupby(indices)
+                #                             if not ix in test_data.corpus._background_indices]
+                #         non_bg_indices = [
+                #             ix for ix in test_data.corpus.indices_by_task(task)
+                #             if ix not in test_data.corpus._background_indices
+                #         ]
+                #         if len(remove_cons_dups) != len(non_bg_indices) and lengths[i].item() != len(remove_cons_dups):
+                #             print("deduped: {}, indices: {}, length {}".format(
+                #                 remove_cons_dups, non_bg_indices, lengths[i].item()
+                #             ))
+                #             # assert lengths[i].item() < len(non_bg_indices)
 
-            pred_labels_trim_s = self.model.trim(pred_labels, lengths, check_eos=True)
+                pred_labels_trim_s = self.model.trim(pred_labels, lengths, check_eos=True)
+                return pred_labels_trim_s
+
+            pred_labels_trim_s = predict(constraints_expanded)
 
             # assert len(pred_labels_trim_s) == 1, "batch size should be 1"
             for ix, (video, pred_labels_trim) in enumerate(zip(videos, pred_labels_trim_s)):
