@@ -26,6 +26,10 @@ class SemiMarkovModel(Model):
 
         parser.add_argument('--sm_train_discriminatively', action='store_true')
 
+        parser.add_argument('--sm_hidden_markov', action='store_true', help='train as hidden markov model (fix K=1) and length distribution')
+
+        parser.add_argument('--sm_predict_single', action='store_true')
+
     @classmethod
     def from_args(cls, args, train_data):
         n_classes = train_data.corpus.n_classes
@@ -35,7 +39,8 @@ class SemiMarkovModel(Model):
 
         assert args.sm_max_span_length is not None
         if args.sm_constrain_transitions:
-            assert args.task_specific_steps, "will get bad results with --sm_constrain_transitions if you don't also pass --task_specific_steps, because of multiple exits"
+            # assert args.task_specific_steps, "will get bad results with --sm_constrain_transitions if you don't also pass --task_specific_steps, because of multiple exits"
+            # TODO: figure out what I meant by multiple exits; this seems fine at least if you're using the ComponentSemiMarkovModule. maybe add a check for this?
             # if not args.remove_background:
             #     raise NotImplementedError("--sm_constrain_transitions without --remove_background ")
 
@@ -57,11 +62,18 @@ class SemiMarkovModel(Model):
                 nonbackground_indices = [ix for ix in indices if ix not in train_data.corpus._background_indices]
                 canon_bkg_ix = background_indices[0]
                 for ix in background_indices:
-                    assert ix not in merge_classes
-                    merge_classes[ix] = canon_bkg_ix
+                    if ix in merge_classes:
+                        assert merge_classes[ix] == canon_bkg_ix
+                    else:
+                        merge_classes[ix] = canon_bkg_ix
+                    # assert ix not in merge_classes
                 for ix in nonbackground_indices:
-                    assert ix not in merge_classes
-                    merge_classes[ix] = ix
+                    if ix in merge_classes:
+                        assert merge_classes[ix] == ix
+                    else:
+                        merge_classes[ix] =  ix
+                    # assert ix not in merge_classes
+                    # merge_classes[ix] = ix
         else:
             merge_classes = None
 
@@ -333,10 +345,18 @@ class SemiMarkovModel(Model):
 
             def predict(constraints):
                 # TODO: figure out under which eval conditions use_mean_z should be False
-                pred_spans = self.model.viterbi(features, lengths, task_indices, add_eos=True, use_mean_z=True,
+                pred_spans, elp = self.model.viterbi(features, lengths, task_indices, add_eos=True, use_mean_z=True,
                                                 additional_allowed_ends_per_instance=addl_allowed_ends,
-                                                constraints=constraints)
+                                                constraints=constraints, return_elp=True)
                 pred_labels = semimarkov_utils.spans_to_labels(pred_spans)
+                # if self.args.sm_predict_single:
+                #     # pred_spans: batch_size x T
+                #     pred_labels_single = torch.zeros_like(pred_labels)
+                #     for i in pred_labels.size(0):
+                #         for lab in torch.unique(pred_labels[i,:lengths[i]]):
+                #             #emission_scores: b x N x C
+                #             pred_labels
+                #             pass
 
                 # if self.args.sm_constrain_transitions:
                 #     all_pred_span_indices = [

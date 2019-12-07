@@ -10,6 +10,7 @@ from data.corpus import Corpus, GroundTruth, Video, Datasplit
 from data.features import grouped_pca
 from utils.logger import logger
 from utils.utils import load_pickle
+import random
 
 CrosstaskTask = namedtuple("CrosstaskTask", ["index", "title", "url", "n_steps", "steps"])
 
@@ -94,7 +95,13 @@ class CrosstaskVideo(Video):
     @classmethod
     def load_grouped_features(cls, feature_root, dimensions_per_feature_group, video_name):
         if dimensions_per_feature_group is None:
-            return np.load(os.path.join(feature_root, "{}.npy".format(video_name)))
+            try:
+                return np.load(os.path.join(feature_root, "{}.npy".format(video_name)))
+            except Exception as e:
+                print(e)
+                print("video_name: {}".format(video_name))
+                print("feature path: {}".format(os.path.join(feature_root, "{}.npy".format(video_name))))
+                raise e
         else:
             all_feats = []
             for feature_group, dimensions in sorted(dimensions_per_feature_group.items()):
@@ -111,8 +118,8 @@ class CrosstaskVideo(Video):
 DATA_SPLITS = ['train', 'val', 'all']
 
 
-def load_videos_by_task(release_root, split='train'):
-    assert split in DATA_SPLITS
+def load_videos_by_task(release_root, split='train', cv_n_train=30):
+    assert split in DATA_SPLITS or split.startswith('cv')
 
     all_videos_by_task = get_vids(os.path.join(release_root, "videos.csv"))
     if split == 'all':
@@ -120,11 +127,31 @@ def load_videos_by_task(release_root, split='train'):
     val_videos_by_task = get_vids(os.path.join(release_root, "videos_val.csv"))
     if split == 'val':
         return val_videos_by_task
+
     val_videos = set(v for vids in val_videos_by_task.values() for v in vids)
     train_videos_by_task = {
         task_index: [v for v in vids if v not in val_videos]
         for task_index, vids in all_videos_by_task.items()
     }
+
+    if split.startswith('cv'):
+        # cv_{train|test}_{split_seed}
+        cv, cv_split, split_seed = split.split('_')
+        assert cv == 'cv'
+        assert cv_split in ['train', 'test']
+
+        vids_by_task = {}
+        for task in train_videos_by_task:
+            state = random.Random(int(split_seed))
+            vids = sorted(train_videos_by_task[task])
+            state.shuffle(vids)
+            if cv_split == 'train':
+                # take first n
+                vids_by_task[task] = vids[:cv_n_train]
+            else:
+                # take remainder
+                vids_by_task[task] = vids[cv_n_train:]
+        return vids_by_task
 
     assert split == 'train'
     return train_videos_by_task
@@ -378,7 +405,7 @@ class CrosstaskCorpus(Corpus):
         self.load_constraints = load_constraints
 
         if annotate_background_with_previous:
-            assert task_specific_steps
+            # assert task_specific_steps
             self.BACKGROUND_LABELS_BY_TASK = {
                 task.index: [self.get_label(task.index, "BKG_{}".format(step))
                              for step in ["FIRST"] + task.steps]
@@ -469,23 +496,35 @@ class CrosstaskGroundTruth(GroundTruth):
         filenames = glob.glob(glob_path)
         assert filenames, "no filenames found for glob path {}".format(glob_path)
         # logger.debug("{} annotation files found".format(len(filenames)))
-        for filename in filenames:
+
+        def get_T(filename):
             file = os.path.split(filename)[1]
             file_no_ext = os.path.splitext(file)[0]
             splits = file_no_ext.split('_')
             task = int(splits[0])
-            if task not in self._task_names:
-                continue
             video = '_'.join(splits[1:])
             T = self._t_by_video[video]
-            num_steps = self._K_by_task[task]
+            num_steps = self._K_by_task.get(task, None)
+            return task, video, T, num_steps
+
+        for filename in filenames:
+            task, video, T, num_steps = get_T(filename)
+            if task not in self._task_names:
+                continue
             global_gt = self._load_gt_single(task, T, num_steps, filename)
             if task not in self.gt_by_task:
                 self.gt_by_task[task] = {}
             self.gt_by_task[task][video] = global_gt
 
-            if self._corpus.load_constraints:
-                constraint_fname = os.path.join(self._corpus._constraints_root, os.path.split(filename)[1])
+        if self._corpus.load_constraints:
+            glob_path = os.path.join(self._corpus._constraints_root, "*.csv")
+            filenames = glob.glob(glob_path)
+            assert filenames, "no filenames found for glob path {}".format(glob_path)
+            for constraint_fname in filenames:
+                # constraint_fname = os.path.join(self._corpus._constraints_root, os.path.split(filename)[1])
+                task, video, T, num_steps = get_T(constraint_fname)
+                if task not in self._task_names:
+                    continue
                 constraint_mat = read_assignment(
                     T, (num_steps if self._remove_background else num_steps-1), constraint_fname, include_background=False
                 )

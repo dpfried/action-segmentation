@@ -38,6 +38,7 @@ def make_optimizer(args, parameters):
 
 
 def padding_colate(data_samples):
+    data_samples = [samp for samp in data_samples if samp is not None]
     unpacked = {
         key: [samp[key] for samp in data_samples]
         for key in next(iter(data_samples)).keys()

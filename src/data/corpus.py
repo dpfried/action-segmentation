@@ -309,7 +309,12 @@ class Datasplit(Dataset):
         video_obj: Video = self._videos_by_task[task_name][video_name]
 
         # num_timesteps = torch_features.size(0)
-        features = video_obj.features()
+        try:
+            features = video_obj.features()
+        except Exception as e:
+            print("exception with task and video {}".format(task_and_video_name))
+            print(e)
+            return None
         task_indices = self.corpus.indices_by_task(task_name)
         if self.remove_background:
             task_indices = set(task_indices) - set(self.corpus._background_indices)

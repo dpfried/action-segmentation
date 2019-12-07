@@ -53,9 +53,6 @@ def add_data_args(parser):
     group.add_argument('--remove_background', action='store_true')
     group.add_argument('--pca_components_per_group', type=int, default=100)
     group.add_argument('--pca_no_background', action='store_true')
-    group.add_argument('--crosstask_feature_groups', choices=['i3d', 'resnet', 'audio', 'narration'], nargs='+', default=['i3d', 'resnet', 'narration'])
-
-    group.add_argument('--crosstask_training_data', choices=['primary', 'related'], nargs='+', default=['primary'])
 
     group.add_argument('--mix_tasks', action='store_true', help='train on all tasks simultaneously')
 
@@ -68,6 +65,14 @@ def add_data_args(parser):
 
     group.add_argument('--force_optimal_assignment', action='store_true', help="force optimal assignment to maximize MoF")
 
+    group.add_argument('--no_cache_features', action='store_true', help="")
+
+    group.add_argument('--crosstask_feature_groups', choices=['i3d', 'resnet', 'audio', 'narration'], nargs='+', default=['i3d', 'resnet', 'narration'])
+    group.add_argument('--crosstask_training_data', choices=['primary', 'related'], nargs='+', default=['primary'])
+
+    group.add_argument('--crosstask_cross_validation', action='store_true')
+    group.add_argument('--crosstask_cross_validation_n_train', type=int, default=30)
+    group.add_argument('--crosstask_cross_validation_seed', type=int)
 
 
 def add_classifier_args(parser):
@@ -111,6 +116,7 @@ def make_model_path(path, split_name):
     else:
         # is directory
         return os.path.join(path, '{}.pkl'.format(split_name))
+
 
 def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=False, train_sub_data=None):
     model = CLASSIFIERS[args.classifier].from_args(args, train_data)
@@ -245,11 +251,28 @@ def make_data_splits(args):
             load_constraints=True,
         )
         corpus._cache_features = True
+        if args.no_cache_features:
+            corpus._cache_features = False
         train_task_sets = args.crosstask_training_data
+
+
         test_task_sets = ['primary']
         task_ids = sorted([task_id for task_set in sorted(set(train_task_sets) | set(test_task_sets))
                            for task_id in CrosstaskCorpus.TASK_IDS_BY_SET[task_set]])
-        split_names_and_full = [('train', True, train_task_sets), ('train', False, test_task_sets), ('val', True, test_task_sets)]
+        if args.crosstask_cross_validation:
+            if train_task_sets != ['primary']:
+                raise NotImplementedError("cross validation with related tasks")
+            split_names_and_full = [
+                ('cv_train_{}'.format(args.crosstask_cross_validation_seed), True, train_task_sets),
+                ('cv_train_{}'.format(args.crosstask_cross_validation_seed), False, train_task_sets),
+                ('cv_test_{}'.format(args.crosstask_cross_validation_seed), True, train_task_sets),
+            ]
+        else:
+            split_names_and_full = [
+                ('train', True, train_task_sets),
+                ('train', False, test_task_sets),
+                ('val', True, test_task_sets)
+            ]
         if args.mix_tasks:
             splits['all'] = tuple(
                 corpus.get_datasplit(remove_background=args.remove_background,
@@ -261,6 +284,10 @@ def make_data_splits(args):
                                      feature_downscale=args.feature_downscale)
                 for split, full, task_sets in split_names_and_full
             )
+            train_videos = set(p[1] for p in splits['all'][0]._tasks_and_video_names)
+            test_videos = set(p[1] for p in splits['all'][2]._tasks_and_video_names)
+            assert not(train_videos & test_videos),\
+                "overlap in train and test videos: {}".format(train_videos & test_videos)
         else:
             for task_id in task_ids:
                 splits['{}_val'.format(task_id)] = tuple(

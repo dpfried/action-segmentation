@@ -531,7 +531,7 @@ class SemiMarkovModule(nn.Module):
 
     def score_features(self, features, lengths, valid_classes, add_eos, use_mean_z,
                        additional_allowed_ends_per_instance=None,
-                       constraints=None):
+                       constraints=None, return_elp=False):
         # assert all_equal(lengths), "varied length scoring isn't implemented"
         # TODO: make this functional
         self.set_z(features, lengths, use_mean=use_mean_z)
@@ -554,9 +554,11 @@ class SemiMarkovModule(nn.Module):
         else:
             allowed_ends_per_instance = None
 
-        return self.log_hsmm(
+        elp = self.emission_log_probs(projected_features, valid_classes, constraints)
+
+        scores = self.log_hsmm(
             self.transition_log_probs(valid_classes),
-            self.emission_log_probs(projected_features, valid_classes, constraints),
+            elp,
             self.initial_log_probs(valid_classes),
             self.length_log_probs(valid_classes),
             lengths,
@@ -564,6 +566,11 @@ class SemiMarkovModule(nn.Module):
             all_batched=self.batched_scores,
             allowed_ends_per_instance=allowed_ends_per_instance,
         )
+
+        if return_elp:
+            return scores, elp
+        else:
+            return scores
 
     def log_likelihood(self, features, lengths, valid_classes_per_instance, spans=None, add_eos=True, use_mean_z=False,
                        additional_allowed_ends_per_instance=None, constraints=None):
@@ -629,7 +636,7 @@ class SemiMarkovModule(nn.Module):
         return log_likelihood
 
     def viterbi(self, features, lengths, valid_classes_per_instance, add_eos=True, use_mean_z=False,
-                additional_allowed_ends_per_instance=None, constraints=None):
+                additional_allowed_ends_per_instance=None, constraints=None, predict_single=False, return_elp=False):
         if valid_classes_per_instance is not None:
             assert all_equal(set(vc.detach().cpu().numpy()) for vc in
                              valid_classes_per_instance), "must have same valid_classes for all instances in the batch"
@@ -638,9 +645,9 @@ class SemiMarkovModule(nn.Module):
         else:
             valid_classes = None
             C = self.n_classes
-        scores = self.score_features(features, lengths, valid_classes, add_eos=add_eos, use_mean_z=use_mean_z,
+        scores, elp = self.score_features(features, lengths, valid_classes, add_eos=add_eos, use_mean_z=use_mean_z,
                                      additional_allowed_ends_per_instance=additional_allowed_ends_per_instance,
-                                     constraints=constraints)
+                                     constraints=constraints, return_elp=True)
         if add_eos:
             eos_lengths = lengths + 1
         else:
@@ -660,7 +667,11 @@ class SemiMarkovModule(nn.Module):
             mapping[C] = self.n_classes  # map EOS
             # unmap
             pred_spans_unmap.apply_(lambda x: mapping[x])
-        return pred_spans_unmap
+
+        if return_elp:
+            return pred_spans_unmap, elp
+        else:
+            return pred_spans_unmap
 
 
 class ComponentSemiMarkovModule(SemiMarkovModule):
@@ -716,9 +727,9 @@ class ComponentSemiMarkovModule(SemiMarkovModule):
         # self.use_separate_embeddings = self.args.sm_component_separate_embeddings
         self.use_separate_embeddings = True
 
-        self.merge_classes = merge_classes
         super(ComponentSemiMarkovModule, self).__init__(args, n_classes, feature_dim, allow_self_transitions,
-                                                        allowed_starts, allowed_transitions, allowed_ends)
+                                                        allowed_starts, allowed_transitions, allowed_ends,
+                                                        merge_classes=merge_classes)
 
     def init_params(self):
         # this initialization follows https://github.com/harvardnlp/compound-pcfg/blob/master/models.py

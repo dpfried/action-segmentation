@@ -583,15 +583,32 @@ class Accuracy(object):
         self._return['mof_non_bg'] = [total_true_non_bkg, total_non_bkg]
         self._return['precision'] = self._precision
         self._return['recall'] = self._recall
-        precision = float(self._precision[0]) / self._precision[1]
-        recall = float(self._recall[0]) / self._recall[1]
+        if self._precision[1] == 0:
+            precision = 0.
+        else:
+            precision = float(self._precision[0]) / self._precision[1]
+        if self._recall[1] == 0:
+            recall = 0.
+        else:
+            recall = float(self._recall[0]) / self._recall[1]
         self._return['f1'] = np.array([(2 * precision * recall) / (precision + recall), 1.0])
 
         self._return['precision_non_bg'] = self._precision_without_bg
         self._return['recall_non_bg'] = self._recall_without_bg
-        precision_no_bg = float(self._precision_without_bg[0]) / self._precision_without_bg[1]
-        recall_no_bg = float(self._recall_without_bg[0]) / self._recall_without_bg[1]
-        self._return['f1_non_bg'] = np.array([(2 * precision_no_bg * recall_no_bg) / (precision_no_bg + recall_no_bg), 1.0])
+        if self._precision_without_bg[1] == 0:
+            precision_no_bg = 0.
+        else:
+            precision_no_bg = float(self._precision_without_bg[0]) / self._precision_without_bg[1]
+        if self._recall_without_bg[1] == 0:
+            recall_no_bg = 0.
+        else:
+            recall_no_bg = float(self._recall_without_bg[0]) / self._recall_without_bg[1]
+
+        if precision_no_bg == 0 and recall_no_bg == 0:
+            f1_no_bg = 0
+        else:
+            f1_no_bg = (2 * precision_no_bg * recall_no_bg) / (precision_no_bg + recall_no_bg)
+        self._return['f1_non_bg'] = np.array([f1_no_bg, 1.0])
 
         self._return['true_background'] = self._true_background_frames
         self._return['pred_background'] = self._pred_background_frames
