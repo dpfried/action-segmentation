@@ -21,6 +21,8 @@ def add_training_args(parser):
 
     parser.add_argument('--train_limit', type=int)
 
+    parser.add_argument('--dev_decode_frequency', type=int, default=1)
+
 
 def make_optimizer(args, parameters):
     opt = torch.optim.Adam(parameters, lr=args.lr)

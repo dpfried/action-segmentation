@@ -87,6 +87,8 @@ class Accuracy(object):
         self._precision = None
         self._recall = None
 
+        self._multiple_labels = None
+
         self._classes_recall = {}
         self._classes_MoF = {}
         self._classes_IoU = {}
@@ -365,12 +367,23 @@ class Accuracy(object):
         levenshteins = []
         max_num_segments = []
 
+        predicted_segments = 0.0
+        predicted_segments_non_bg = 0.0
+
+        num_videos = 0
+
         assert len(self._predicted_labels_per_video) == len(self._gt_labels_per_video)
+        background_remapped_labels = set(singleton_lookup(gt2cluster, label)
+                                         for label in self._corpus._background_indices
+                                         if len(gt2cluster[label]) > 0)
         for ix, (gt_rle, pred_rle) in enumerate(zip(self._gt_rle_per_video, self._predicted_rle_per_video)):
+            num_videos += 1
             assert sum(length for _, length in gt_rle) == sum(length for _, length in pred_rle)
             gt_remapped_segments = [singleton_lookup(gt2cluster, label) for (label, length) in gt_rle]
             pred_segments = [label for (label, length) in pred_rle]
             # self._logger.debug("{}: \n\tpred: {}\n\tgold:{}".format(ix, pred_segments, gt_remapped_segments))
+            predicted_segments += len(pred_segments)
+            predicted_segments_non_bg += len([seg_label for seg_label in pred_segments if seg_label not in background_remapped_labels])
             levenshteins.append(editdistance.eval(gt_remapped_segments, pred_segments))
             max_num_segments.append(max(len(gt_remapped_segments), len(pred_segments)))
 
@@ -385,6 +398,8 @@ class Accuracy(object):
             'total_levenshtein': np.array([np.sum(levenshteins), 1.0]),
             'num_videos': np.array([len(levenshteins), 1.0]),
             'mean_normed_levenshtein': np.array([np.mean(levenshteins / max_num_segments), 1.0]),
+            'predicted_segments_per_video': np.array([predicted_segments, num_videos]),
+            'predicted_segments_non_bg_per_video': np.array([predicted_segments_non_bg, num_videos]),
         }
         if self._verbose:
             logger.debug("Levenshtein stats")
@@ -404,14 +419,25 @@ class Accuracy(object):
         center_step_match = 0.0
         non_background_center_step_match = 0.0
 
+        predicted_label_types = 0.0
+        predicted_label_types_non_bg = 0.0
+        num_videos = 0.0
+
         assert len(self._predicted_labels_per_video) == len(self._gt_labels_per_video)
+        background_remapped_labels = set(singleton_lookup(gt2cluster, label)
+                                         for label in self._corpus._background_indices
+                                         if len(gt2cluster[label]) > 0)
+
         for gt_labels, pred_labels in zip(self._gt_labels_per_video, self._predicted_labels_per_video):
+            num_videos += 1
             pred_labels = np.asarray(pred_labels)
             background_timesteps = [lab in self._corpus._background_indices for lab in gt_labels]
-            background_remapped_labels = set(singleton_lookup(gt2cluster, label)
-                                             for label in self._corpus._background_indices
-                                             if len(gt2cluster[label]) > 0)
             gt_labels_remapped = np.asarray([gt2cluster[gt_label] for gt_label in gt_labels])
+
+            for label in np.unique(pred_labels):
+                predicted_label_types += 1
+                if label not in background_remapped_labels:
+                    predicted_label_types_non_bg += 1
 
             for label in np.unique(gt_labels_remapped):
                 step_total += 1
@@ -436,6 +462,8 @@ class Accuracy(object):
             'step_recall_non_bg': np.array([non_background_step_match, non_background_step_total]),
             'center_step_recall': np.array([center_step_match, step_total]),
             'center_step_recall_non_bg': np.array([non_background_center_step_match, non_background_step_total]),
+            'predicted_label_types_per_video': np.array([predicted_label_types, num_videos]),
+            'predicted_label_types_non_bg_per_video': np.array([predicted_label_types_non_bg, num_videos]),
         })
         if self._verbose:
             logger.debug("Single step recall stats")
@@ -505,7 +533,12 @@ class Accuracy(object):
 
         self._non_bg_IoU_multi = np.zeros(2)
 
+        self._multiple_labels = np.zeros(2)
+
         for gt_labels_t, pred_label_t in zip(self.gt_labels_multi, self._full_predicted_labels):
+            self._multiple_labels[1] += 1
+            if len(gt_labels_t) > 1:
+                self._multiple_labels[0] += 1
             gt_clusters_t = [self._gt2cluster[gt_label] for gt_label in gt_labels_t]
             self._recall[1] += len(gt_labels_t)
             self._precision[1] += 1
@@ -614,6 +647,8 @@ class Accuracy(object):
         self._return['pred_background'] = self._pred_background_frames
 
         self._return['iou_multi_non_bg'] = self._non_bg_IoU_multi
+
+        self._return['multiple_gt_labels'] = self._multiple_labels
 
         if self._verbose:
             logger.debug('average class mof: %f' % average_class_mof)

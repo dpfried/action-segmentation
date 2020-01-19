@@ -4,6 +4,7 @@ import pickle
 import pprint
 import sys
 from collections import OrderedDict
+import json
 
 import numpy as np
 
@@ -11,13 +12,26 @@ from data.breakfast import BreakfastCorpus
 from data.corpus import Datasplit
 from data.crosstask import CrosstaskCorpus
 from models.framewise import FramewiseGaussianMixture, FramewiseDiscriminative, FramewiseBaseline
-from models.sequential import SequentialDiscriminative, SequentialCanonicalBaseline, SequentialPredictConstraints
+from models.sequential import SequentialDiscriminative, SequentialCanonicalBaseline, SequentialPredictConstraints, SequentialGroundTruth
 from models.model import Model, add_training_args
 from models.semimarkov.semimarkov import SemiMarkovModel
 from utils.logger import logger
 
-STAT_KEYS = ['mof', 'mof_non_bg', 'step_recall_non_bg', 'mean_normed_levenshtein', 'center_step_recall_non_bg', 'f1', 'f1_non_bg', 'pred_background', 'iou_multi_non_bg']
-DISPLAY_STAT_KEYS = ['f1', 'f1_non_bg', 'center_step_recall_non_bg', 'mean_normed_levenshtein', 'pred_background', 'iou_multi_non_bg']
+STAT_KEYS = [
+    'mof', 'mof_non_bg', 'step_recall_non_bg', 'mean_normed_levenshtein',
+    'center_step_recall_non_bg', 'f1', 'f1_non_bg', 'pred_background', 'iou_multi_non_bg',
+    'predicted_label_types_per_video', 'predicted_label_types_non_bg_per_video',
+    'predicted_segments_per_video', 'predicted_segments_non_bg_per_video',
+    'multiple_gt_labels',
+]
+DISPLAY_STAT_KEYS = [
+    'f1', 'f1_non_bg', 'center_step_recall_non_bg', 'mean_normed_levenshtein',
+    'pred_background', 'iou_multi_non_bg',
+    'predicted_label_types_per_video', 'predicted_label_types_non_bg_per_video',
+    'predicted_segments_per_video', 'predicted_segments_non_bg_per_video',
+    'mof', 'mof_non_bg',
+    'multiple_gt_labels',
+]
 
 CLASSIFIERS = {
     'framewise_discriminative': FramewiseDiscriminative,
@@ -27,6 +41,7 @@ CLASSIFIERS = {
     'sequential_discriminative': SequentialDiscriminative,
     'sequential_canonical_baseline': SequentialCanonicalBaseline,
     'sequential_predict_constraints': SequentialPredictConstraints,
+    'sequential_ground_truth': SequentialGroundTruth,
 }
 
 
@@ -34,6 +49,7 @@ def add_serialization_args(parser):
     group = parser.add_argument_group('serialization')
     group.add_argument('--model_output_path')
     group.add_argument('--model_input_path')
+    group.add_argument('--prediction_output_path')
 
 
 def add_misc_args(parser):
@@ -42,6 +58,7 @@ def add_misc_args(parser):
     group.add_argument('--compare_only',
                        action='store_true',
                        help="skip everything to do with models and just evaluate these serialized predictions")
+    group.add_argument('--compare_load_splits_from_predictions', action='store_true')
 
 
 def add_data_args(parser):
@@ -49,6 +66,7 @@ def add_data_args(parser):
     group.add_argument('--dataset', choices=['crosstask', 'breakfast'], default='crosstask')
     group.add_argument('--features', choices=['raw', 'pca'], default='raw')
     group.add_argument('--feature_downscale', type=float, default=1.0)
+    group.add_argument('--feature_permutation_seed', type=int)
     group.add_argument('--batch_size', type=int, default=5)
     group.add_argument('--remove_background', action='store_true')
     group.add_argument('--pca_components_per_group', type=int, default=100)
@@ -71,7 +89,7 @@ def add_data_args(parser):
     group.add_argument('--crosstask_training_data', choices=['primary', 'related'], nargs='+', default=['primary'])
 
     group.add_argument('--crosstask_cross_validation', action='store_true')
-    group.add_argument('--crosstask_cross_validation_n_train', type=int, default=30)
+    # group.add_argument('--crosstask_cross_validation_n_train', type=int, default=30)
     group.add_argument('--crosstask_cross_validation_seed', type=int)
 
 
@@ -83,8 +101,26 @@ def add_classifier_args(parser):
     for name, cls in CLASSIFIERS.items():
         cls.add_args(parser)
 
+def write_predictions(test_data, predictions_by_video, output_path):
+    # TODO: unuglify this
+    for video, pred in predictions_by_video.items():
+        labels = []
+        task = test_data._tasks_by_video[video]
+        for index in pred:
+            if index in test_data._corpus._background_indices:
+                label = "<BKG>"
+            else:
+                label = test_data._corpus.index2label[index].replace(' ', '_')
+            labels.append('{}:{}'.format(task, label))
+        with open(os.path.join(output_path, video), 'w') as f:
+            f.write('### Recognized sequence: ###\n')
+            f.write('\n') # TODO
+            f.write('### Score: ###\n')
+            f.write('\n') # TODO
+            f.write('### Frame level recognition: ###\n')
+            f.write(' '.join(labels))
 
-def test(args, model: Model, test_data: Datasplit, test_data_name: str, verbose=True):
+def test(args, model: Model, test_data: Datasplit, test_data_name: str, verbose=True, prediction_output_path=None):
     if args.training == 'supervised':
         optimal_assignment = False
     else:
@@ -100,6 +136,10 @@ def test(args, model: Model, test_data: Datasplit, test_data_name: str, verbose=
         prediction_function = lambda video: predictions_by_video[video.name]
     else:
         prediction_function = None
+    # print('prediction_output_path: {}'.format(prediction_output_path))
+    if prediction_output_path is not None:
+        assert model is not None
+        write_predictions(test_data, predictions_by_video, prediction_output_path)
     stats = test_data.accuracy_corpus(
         optimal_assignment,
         prediction_function,
@@ -170,7 +210,12 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
         else:
             train_name = 'train'
             train_stats = evaluate_on_data(train_data, train_name)
-        dev_stats = evaluate_on_data(dev_data, 'dev')
+        split_stats = [train_stats]
+        if epoch == -1 or epoch % args.dev_decode_frequency == 0:
+            dev_stats = evaluate_on_data(dev_data, 'dev')
+            split_stats.append(dev_stats)
+        else:
+            dev_stats = None
         log_str = '{}\tepoch {:2d}'.format(split_name, epoch)
         for stat, value in stats.items():
             if isinstance(value, float):
@@ -178,14 +223,16 @@ def train(args, train_data: Datasplit, dev_data: Datasplit, split_name, verbose=
             else:
                 log_str += '\t{} {}'.format(stat, value)
         # log_str += '\t{} '.format(train_name)
-        for stats in [train_stats, dev_stats]:
+        for stats in split_stats:
             log_str += '\n'
             for name, val in sorted(stats.items()):
                 log_str += ' {} {:.4f}'.format(name, val)
         # log_str += '\t{} mof {:.4f}\tdev mof {:.4f}'.format(train_name, train_mof, dev_mof)
         logger.debug(log_str)
         models_by_epoch[epoch] = pickle.dumps(model)
-        dev_mof_by_epoch[epoch] = dev_stats['dev_mof']
+
+        if dev_stats is not None:
+            dev_mof_by_epoch[epoch] = dev_stats['dev_mof']
 
         if args.model_output_path and epoch % 5 == 0:
             os.makedirs(args.model_output_path, exist_ok=True)
@@ -273,6 +320,20 @@ def make_data_splits(args):
                 ('train', False, test_task_sets),
                 ('val', True, test_task_sets)
             ]
+        if args.compare_load_splits_from_predictions:
+            assert args.compare_to_prediction_folder
+            assert args.compare_only
+            assert not args.crosstask_cross_validation, "just pass --compare_to_prediction_folder, --compare_only, and --compare_load_splits_from_predictions"
+            with open(os.path.join(args.compare_to_prediction_folder, 'y_pred.json'), 'rb') as f:
+                preds_by_task_and_video = json.load(f)
+            val_videos_override = []
+            for task, data in preds_by_task_and_video.items():
+                val_videos_override.extend(data.keys())
+            print("loaded predictions for {} videos; using as the validation set".format(len(val_videos_override)))
+        else:
+            val_videos_override = None
+
+            # TODO: here
         if args.mix_tasks:
             splits['all'] = tuple(
                 corpus.get_datasplit(remove_background=args.remove_background,
@@ -281,7 +342,10 @@ def make_data_splits(args):
                                      split=split,
                                      full=full,
                                      subsample=args.frame_subsample,
-                                     feature_downscale=args.feature_downscale)
+                                     feature_downscale=args.feature_downscale,
+                                     val_videos_override=val_videos_override,
+                                     feature_permutation_seed=args.feature_permutation_seed,
+                                     )
                 for split, full, task_sets in split_names_and_full
             )
             train_videos = set(p[1] for p in splits['all'][0]._tasks_and_video_names)
@@ -297,7 +361,10 @@ def make_data_splits(args):
                                          split=split,
                                          full=full,
                                          subsample=args.frame_subsample,
-                                         feature_downscale=args.feature_downscale)
+                                         feature_downscale=args.feature_downscale,
+                                         val_videos_override=val_videos_override,
+                                         feature_permutation_seed=args.feature_permutation_seed,
+                                         )
                     for split, full, task_sets in split_names_and_full
                 )
     elif args.dataset == 'breakfast':
@@ -326,17 +393,23 @@ def make_data_splits(args):
                                      splits=[sp for sp in all_splits if sp != heldout_split],
                                      full=True,
                                      subsample=args.frame_subsample,
-                                     feature_downscale=args.feature_downscale),
+                                     feature_downscale=args.feature_downscale,
+                                     feature_permutation_seed=args.feature_permutation_seed,
+                                     ),
                 corpus.get_datasplit(remove_background=args.remove_background,
                                      splits=[sp for sp in all_splits if sp != heldout_split],
                                      full=True,
                                      subsample=args.frame_subsample,
-                                     feature_downscale=args.feature_downscale), # has issue with some tasks being dropped if we pass full=False
+                                     feature_downscale=args.feature_downscale,
+                                     feature_permutation_seed=args.feature_permutation_seed,
+                                     ), # has issue with some tasks being dropped if we pass full=False
                 corpus.get_datasplit(remove_background=args.remove_background,
                                      splits=[heldout_split],
                                      full=True,
                                      subsample=args.frame_subsample,
-                                     feature_downscale=args.feature_downscale),
+                                     feature_downscale=args.feature_downscale,
+                                     feature_permutation_seed=args.feature_permutation_seed,
+                                     ),
             )
     else:
         raise NotImplementedError("invalid dataset {}".format(args.dataset))
@@ -396,7 +469,11 @@ if __name__ == "__main__":
             else:
                 model = train(args, train_data, test_data, split_name, train_sub_data=train_sub_data)
 
-        stats_by_task = test(args, model, test_data, split_name)
+        print('split_name: {}'.format(split_name))
+        # prediction_output_path = args.prediction_output_path if 'val' in split_name else None
+        prediction_output_path = args.prediction_output_path
+
+        stats_by_task = test(args, model, test_data, split_name, prediction_output_path=prediction_output_path)
         stats_by_split_by_task[split_name] = {}
         for task, stats in stats_by_task.items():
             stats_by_split_and_task["{}_{}".format(split_name, task)] = stats

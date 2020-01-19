@@ -169,6 +169,10 @@ class SemiMarkovModel(Model):
                 callback_fn(-1, {})
             else:
                 return
+        if self.args.sm_init_non_projection_parameters_from:
+            initialize = False
+            if callback_fn:
+                callback_fn(-1, {})
         optimizer, scheduler = make_optimizer(self.args, self.model.parameters())
         big_loader = make_data_loader(self.args, train_data, batch_by_task=False, shuffle=True, batch_size=100)
         samp = next(iter(big_loader))
@@ -182,6 +186,8 @@ class SemiMarkovModel(Model):
             self.model.initialize_gaussian(big_features, big_lengths)
 
         loader = make_data_loader(self.args, train_data, batch_by_task=True, shuffle=True, batch_size=self.args.batch_size)
+
+        # print('{} videos in training data'.format(len(loader.dataset)))
 
         # all_features = [sample['features'] for batch in loader for sample in batch]
         # if self.args.cuda:
@@ -198,10 +204,12 @@ class SemiMarkovModel(Model):
             multi_batch_losses = []
             nlls = []
             kls = []
+            log_dets = []
             num_frames = 0
             num_videos = 0
             train_nll = 0
             train_kl = 0
+            train_log_det = 0
             # for batch_ix, batch in enumerate(tqdm.tqdm(loader, ncols=80)):
             for batch_ix, batch in enumerate(loader):
                 if self.args.train_limit and batch_ix >= self.args.train_limit:
@@ -248,7 +256,7 @@ class SemiMarkovModel(Model):
 
                 addl_allowed_ends = self.make_additional_allowed_ends(tasks, lengths)
 
-                nll = -self.model.log_likelihood(features,
+                ll, log_det = self.model.log_likelihood(features,
                                                  lengths,
                                                  valid_classes_per_instance=task_indices,
                                                  spans=spans,
@@ -256,17 +264,20 @@ class SemiMarkovModel(Model):
                                                  use_mean_z=use_mean_z,
                                                  additional_allowed_ends_per_instance=addl_allowed_ends,
                                                  constraints=constraints_expanded)
+                nll = -ll
                 kl = self.model.kl.mean()
                 if use_labels:
-                    this_loss = nll
+                    this_loss = nll - log_det
                 else:
-                    this_loss = nll + kl
+                    this_loss = nll - log_det + kl
                 multi_batch_losses.append(this_loss)
                 nlls.append(nll.item())
                 kls.append(kl.item())
+                log_dets.append(log_det.item())
 
                 train_nll += (nll.item() * len(videos))
                 train_kl += (kl.item() * len(videos))
+                train_log_det += (log_det.item() * len(videos))
 
                 losses.append(this_loss.item())
 
@@ -281,15 +292,16 @@ class SemiMarkovModel(Model):
                         gparam_norm = sum([p.grad.norm()**2 for p in self.model.parameters()
                                            if p.requires_grad and p.grad is not None]).item()**0.5
                         log_str = 'Epoch: %02d, Batch: %03d/%03d, |Param|: %.6f, |GParam|: %.2f, lr: %.2E, ' + \
-                                  'loss: %.4f, recon: %.4f, kl: %.4f, recon_bound: %.2f, Throughput: %.2f vid / sec'
+                                  'loss: %.4f, recon: %.4f, kl: %.4f, log_det: %.4f, recon_bound: %.2f, Throughput: %.2f vid / sec'
                         print(log_str %
                               (epoch, batch_ix, len(loader), param_norm, gparam_norm,
                                optimizer.param_groups[0]["lr"],
-                               (train_nll + train_kl) / num_videos,
-                               train_nll / num_frames,
-                               train_kl / num_frames,
-                               (train_nll + train_kl) / num_frames,
-                              num_videos / (time.time() - start_time)))
+                               (train_nll + train_kl + train_log_det) / num_videos, # loss
+                               train_nll / num_frames, # recon
+                               train_kl / num_frames, # kl
+                               train_log_det / num_videos, # log_det
+                               (train_nll + train_kl) / num_frames, # recon_bound
+                              num_videos / (time.time() - start_time))) # Throughput
                     if self.args.max_grad_norm is not None:
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.max_grad_norm)
 
@@ -301,14 +313,14 @@ class SemiMarkovModel(Model):
             callback_fn(epoch, {'train_loss': train_loss,
                                 'train_nll_frame_avg': train_nll / num_frames,
                                 'train_kl_vid_avg': train_kl / num_videos,
-                                'train_recon_bound': (train_kl + train_kl) / num_frames})
+                                'train_recon_bound': (train_nll + train_kl) / num_frames})
 
     def predict(self, test_data):
         self.model.eval()
         self.model.flatten_parameters()
         predictions = {}
-        # for some reason, EOM errors happen more frequently in viterbi, so reduce batch size
-        loader = make_data_loader(self.args, test_data, shuffle=False, batch_by_task=True, batch_size=self.args.batch_size // 2)
+        loader = make_data_loader(self.args, test_data, shuffle=False, batch_by_task=True, batch_size=self.args.batch_size)
+        # print('{} videos in prediction data'.format(len(loader.dataset)))
         # for batch in tqdm.tqdm(loader, ncols=80):
         for batch in loader:
             features = batch['features']

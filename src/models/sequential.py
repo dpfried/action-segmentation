@@ -105,6 +105,45 @@ class SequentialPredictConstraints(Model):
                 # just arbitrarily choose a background index, they will get canonicalized anyway
         return predictions
 
+class SequentialGroundTruth(Model):
+    @classmethod
+    def add_args(cls, parser):
+        pass
+
+    @classmethod
+    def from_args(cls, args, train_data: Datasplit):
+        return cls(args, train_data)
+
+    def __init__(self, args, train_data: Datasplit):
+        from data.crosstask import CrosstaskDatasplit
+        assert isinstance(train_data, CrosstaskDatasplit)
+        self.args = args
+        self.n_classes = train_data._corpus.n_classes
+        self.remove_background = train_data.remove_background
+
+        pass
+
+    def fit(self, train_data: Datasplit, use_labels: bool, callback_fn=None):
+        pass
+
+    def predict(self, test_data: Datasplit):
+        predictions = {}
+        loader = make_data_loader(self.args, test_data, batch_by_task=False, shuffle=False, batch_size=1)
+
+        for batch in loader:
+            features = batch['features'].squeeze(0)
+            # num_timesteps = features.size(0)
+
+            tasks = batch['task_name']
+            assert len(tasks) == 1
+            # task = next(iter(tasks))
+            videos = batch['video_name']
+            assert len(videos) == 1
+            video = next(iter(videos))
+
+            predictions[video] = batch['gt_single'].squeeze(0).numpy().tolist()
+        return predictions
+
 class SequentialCanonicalBaseline(Model):
     @classmethod
     def add_args(cls, parser):

@@ -22,7 +22,7 @@ WARN_ON_MISMATCH = False
 class Video(object):
     def __init__(self, feature_root, K, remove_background, *, nonbackground_timesteps=None,
                  gt=None, gt_with_background=None, name='', cache_features=False, has_label=True,
-                 features_contain_background=True, constraints=None):
+                 features_contain_background=True, constraints=None, feature_permutation_seed=None):
         """
         Args:
             feature_root (str): path to video representation
@@ -39,8 +39,8 @@ class Video(object):
         self._cache_features = cache_features
         self._has_label = has_label
         self._features_contain_background = features_contain_background
-
         self._constraints = constraints
+        self._feature_permutation_seed = feature_permutation_seed
 
         self._non_background_constraints = None
 
@@ -117,6 +117,11 @@ class Video(object):
             features = self._features
         else:
             features = self._process_features(self.load_features())
+        if self._feature_permutation_seed is not None:
+            state = np.random.RandomState(self._feature_permutation_seed)
+            permutation = np.arange(features.shape[1])
+            state.shuffle(permutation)
+            features = features[:,permutation]
         return features
 
     def n_frames(self):
@@ -246,10 +251,13 @@ class Video(object):
 
 
 class Datasplit(Dataset):
-    def __init__(self, corpus, remove_background, full=True, subsample=1, feature_downscale=1.0):
+    def __init__(self, corpus, remove_background, full=True, subsample=1, feature_downscale=1.0,
+                 feature_permutation_seed=None):
         self._corpus = corpus
         self._remove_background = remove_background
         self._full = full
+
+        self._feature_permutation_seed = feature_permutation_seed
 
         # logger.debug('%s  subactions: %d' % (subaction, self._K))
         self.return_stat = {}
@@ -575,6 +583,7 @@ class Datasplit(Dataset):
                     video.segmentation[video.iter] = (prediction_function(video), self._label2gt)
 
             stats = accuracy_to_return.stat()
+            stats['num_videos'] = np.array([len(self._videos_by_task[task]), 1])
             if compare_to_folder is not None:
                 comparison_stats = compare_accuracy.stat()
                 if verbose:

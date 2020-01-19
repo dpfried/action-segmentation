@@ -14,7 +14,8 @@ from utils.utils import all_equal
 
 
 class BreakfastDatasplit(Datasplit):
-    def __init__(self, corpus, remove_background, task_filter=None, splits=None, full=True, subsample=1, feature_downscale=1.0):
+    def __init__(self, corpus, remove_background, task_filter=None, splits=None, full=True, subsample=1, feature_downscale=1.0,
+                 feature_permutation_seed=None):
         if splits is None:
             splits = list(sorted(BreakfastCorpus.DATASPLITS.keys()))
         self._splits = splits
@@ -28,11 +29,14 @@ class BreakfastDatasplit(Datasplit):
                 assert len(set(p_files) & set(self._p_files)) == 0, "{} : {}".format(set(p_files), set(self._p_files))
                 self._p_files.extend(p_files)
 
-        super(BreakfastDatasplit, self).__init__(corpus,
-                                                 remove_background=remove_background,
-                                                 full=full,
-                                                 subsample=subsample,
-                                                 feature_downscale=feature_downscale)
+        super(BreakfastDatasplit, self).__init__(
+            corpus,
+            remove_background=remove_background,
+            full=full,
+            subsample=subsample,
+            feature_downscale=feature_downscale,
+            feature_permutation_seed=feature_permutation_seed
+        )
 
     def _load_ground_truth_and_videos(self, remove_background):
         self.groundtruth = BreakfastGroundTruth(
@@ -98,6 +102,7 @@ class BreakfastDatasplit(Datasplit):
                         gt_with_background=self.groundtruth.gt_with_background_by_task[task][gt_name],
                         name=gt_name,
                         cache_features=self._corpus._cache_features,
+                        feature_permutation_seed=self._feature_permutation_seed,
                     )
                     # self._features = join_data(self._features, video.features(),
                     #                            np.vstack)
@@ -174,9 +179,11 @@ class BreakfastCorpus(Corpus):
                     assert label in self._background_labels
                 assert _index == index
 
-    def get_datasplit(self, remove_background, task_filter=None, splits=None, full=True, subsample=1, feature_downscale=1.0):
+    def get_datasplit(self, remove_background, task_filter=None, splits=None, full=True, subsample=1, feature_downscale=1.0,
+                      feature_permutation_seed=None):
         return BreakfastDatasplit(self, remove_background, task_filter=task_filter, splits=splits,
-                                  full=full, subsample=subsample, feature_downscale=feature_downscale)
+                                  full=full, subsample=subsample, feature_downscale=feature_downscale,
+                                  feature_permutation_seed=feature_permutation_seed)
 
 def datasets_by_task(mapping_file, feature_root, label_root, remove_background,
                      task_ids=None, splits=BreakfastCorpus.DATASPLITS.keys(), full=True):

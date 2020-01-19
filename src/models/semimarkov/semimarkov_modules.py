@@ -1,5 +1,6 @@
 from typing import Dict, Set
 
+import pickle
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -60,6 +61,7 @@ class SemiMarkovModule(nn.Module):
 
         # parser.add_argument('--sm_projection_dim', type=int)
         parser.add_argument('--sm_feature_projection', action='store_true', help='use a flow')
+        parser.add_argument('--sm_init_non_projection_parameters_from')
         NICETrans.add_args(parser)
 
     def __init__(self, args, n_classes, n_dims,
@@ -80,12 +82,18 @@ class SemiMarkovModule(nn.Module):
         self.feature_dim = n_dims
         self.allow_self_transitions = allow_self_transitions
         self.init_params()
-        self.init_projector()
         if allowed_starts is not None:
             assert allowed_transitions is not None
             self.set_transition_constraints(allowed_starts, allowed_transitions, allowed_ends)
         else:
             self.remove_transition_constraints()
+        if args.sm_init_non_projection_parameters_from is not None:
+            print("loading all non-flow parameters from {}".format(args.sm_init_non_projection_parameters_from))
+            with open(args.sm_init_non_projection_parameters_from, 'rb') as f:
+                sm = pickle.load(f)
+                self.init_nonproject_parameters(sm.model)
+
+        self.init_projector()
         self.max_k = args.sm_max_span_length
         # self._learn_transitions = learn_transitions
 
@@ -113,6 +121,12 @@ class SemiMarkovModule(nn.Module):
             return self._merge_classes
         else:
             return None
+
+    def init_nonproject_parameters(self, model):
+        assert isinstance(model, SemiMarkovModule)
+        incompatible_keys = self.load_state_dict(model.state_dict(), strict=False)
+        assert not incompatible_keys.unexpected_keys, incompatible_keys.unexpected_keys
+        assert all(k.startswith("feature_projector") for k in incompatible_keys.missing_keys), incompatible_keys.missing_Keys
 
     def init_projector(self):
         if self.args.sm_feature_projection:
@@ -372,6 +386,9 @@ class SemiMarkovModule(nn.Module):
         # max_length x n_classes
         time_steps = torch.arange(max_length, device=log_rates.device).unsqueeze(-1).expand(max_length,
                                                                                             n_classes).float()
+        if max_length == 1:
+            return torch.FloatTensor([0, -1000]).unsqueeze(-1).expand(2, n_classes).to(log_rates.device)
+            # return torch.zeros(max_length, n_classes).to(log_rates.device)
         poissons = Poisson(torch.exp(log_rates))
         if log_rates.dim() == 2:
             time_steps = time_steps.unsqueeze(1).expand(max_length, log_rates.size(0), n_classes)
@@ -459,7 +476,11 @@ class SemiMarkovModule(nn.Module):
             length_scores_augmented = torch.full((b, K, C), BIG_NEG, device=length_scores.device)
             length_scores_augmented[:, :, :C_1] = length_scores
             # EOS must be length 1, although I don't think this is checked in the dp
-            length_scores_augmented[:, 1, C_1] = 0
+            if length_scores_augmented.size(1) > 1:
+                length_scores_augmented[:, 1, C_1] = 0
+            else:
+                # oops
+                length_scores_augmented[:, 0, C_1] = 0
 
             emission_augmented = torch.full((b, N, C), BIG_NEG, device=emission_scores.device)
             for i, length in enumerate(lengths):
@@ -537,9 +558,10 @@ class SemiMarkovModule(nn.Module):
         self.set_z(features, lengths, use_mean=use_mean_z)
 
         if self.feature_projector is not None:
-            projected_features, jacobian = self.feature_projector(features)
+            projected_features, log_det = self.feature_projector(features)
         else:
             projected_features = features
+            log_det = torch.zeros(features.size(0), device=features.device, requires_grad=False)
 
         if self.allowed_ends is not None:
             # TODO: ugh
@@ -568,9 +590,9 @@ class SemiMarkovModule(nn.Module):
         )
 
         if return_elp:
-            return scores, elp
+            return scores, log_det, elp
         else:
-            return scores
+            return scores, log_det
 
     def log_likelihood(self, features, lengths, valid_classes_per_instance, spans=None, add_eos=True, use_mean_z=False,
                        additional_allowed_ends_per_instance=None, constraints=None):
@@ -583,12 +605,12 @@ class SemiMarkovModule(nn.Module):
             valid_classes = None
             C = self.n_classes
 
-        scores = self.score_features(features, lengths, valid_classes, add_eos=add_eos, use_mean_z=use_mean_z,
+        scores, log_det = self.score_features(features, lengths, valid_classes, add_eos=add_eos, use_mean_z=use_mean_z,
                                      additional_allowed_ends_per_instance=additional_allowed_ends_per_instance,
                                      constraints=constraints)
 
         K = scores.size(2)
-        assert K <= self.max_k
+        assert K <= self.max_k or (self.max_k == 1 and K == 2)
 
         if add_eos:
             eos_lengths = lengths + 1
@@ -633,7 +655,7 @@ class SemiMarkovModule(nn.Module):
                 ).mean()
         else:
             log_likelihood = dist.partition.mean()
-        return log_likelihood
+        return log_likelihood, log_det.mean()
 
     def viterbi(self, features, lengths, valid_classes_per_instance, add_eos=True, use_mean_z=False,
                 additional_allowed_ends_per_instance=None, constraints=None, predict_single=False, return_elp=False):
@@ -645,7 +667,7 @@ class SemiMarkovModule(nn.Module):
         else:
             valid_classes = None
             C = self.n_classes
-        scores, elp = self.score_features(features, lengths, valid_classes, add_eos=add_eos, use_mean_z=use_mean_z,
+        scores, log_det, elp = self.score_features(features, lengths, valid_classes, add_eos=add_eos, use_mean_z=use_mean_z,
                                      additional_allowed_ends_per_instance=additional_allowed_ends_per_instance,
                                      constraints=constraints, return_elp=True)
         if add_eos:

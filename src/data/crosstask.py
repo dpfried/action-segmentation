@@ -117,7 +117,6 @@ class CrosstaskVideo(Video):
 
 DATA_SPLITS = ['train', 'val', 'all']
 
-
 def load_videos_by_task(release_root, split='train', cv_n_train=30):
     assert split in DATA_SPLITS or split.startswith('cv')
 
@@ -174,7 +173,11 @@ def datasets_by_task(release_root, feature_root, remove_background, task_sets=No
 
 
 class CrosstaskDatasplit(Datasplit):
-    def __init__(self, corpus, remove_background, task_sets=None, split='train', task_ids=None, full=True, subsample=1, feature_downscale=1.0):
+    def __init__(self, corpus, remove_background, task_sets=None,
+                 split='train', task_ids=None, full=True, subsample=1, feature_downscale=1.0,
+                 val_videos_override=None,
+                 feature_permutation_seed=None,
+                 ):
         self.full = full
         self._tasks_to_load = []
 
@@ -195,17 +198,36 @@ class CrosstaskDatasplit(Datasplit):
             task.index: task for task in self._tasks_to_load
         }
 
-        self._video_names_by_task = {
-            task_index: videos
-            for task_index, videos in load_videos_by_task(corpus._release_root, split=split).items()
-            if task_index in task_indices_to_load
-        }
+        if val_videos_override is not None:
+            def use_video(video):
+                if split == 'train':
+                    return video not in val_videos_override
+                else:
+                    assert split == 'val'
+                    return video in val_videos_override
+            self._video_names_by_task = {
+                task_index: [video for video in videos if use_video(video)]
+                for task_index, videos in load_videos_by_task(corpus._release_root, split='all').items()
+                if task_index in task_indices_to_load
+            }
+        else:
+            self._video_names_by_task = {
+                task_index: videos
+                for task_index, videos in load_videos_by_task(corpus._release_root, split=split).items()
+                if task_index in task_indices_to_load
+            }
 
         if not self.full:
             self._video_names_by_task = {
                 task_index: videos[:10]
                 for task_index, videos in self._video_names_by_task.items()
             }
+
+        self._tasks_by_video =  {
+            video: task
+            for task, videos in self._video_names_by_task.items()
+            for video in videos
+        }
 
         assert len(
             self._video_names_by_task) != 0, "no tasks found with task_sets {}, task_ids {}, split {}, and release_directory {}".format(
@@ -223,7 +245,10 @@ class CrosstaskDatasplit(Datasplit):
 
         self._save_frame_counts = (split == 'all' and set(corpus.TASK_SET_PATHS.keys()) == set(task_sets))
 
-        super(CrosstaskDatasplit, self).__init__(corpus, remove_background, subsample=subsample, feature_downscale=feature_downscale)
+        super(CrosstaskDatasplit, self).__init__(
+            corpus, remove_background, subsample=subsample, feature_downscale=feature_downscale,
+            feature_permutation_seed=feature_permutation_seed
+        )
 
     def _load_ground_truth_and_videos(self, remove_background):
         # features_by_task_and_video = {}
@@ -283,6 +308,7 @@ class CrosstaskDatasplit(Datasplit):
                     cache_features=self._corpus._cache_features,
                     features_contain_background=self._corpus._features_contain_background,
                     constraints=self.groundtruth.constraints_by_task[task_name][video],
+                    feature_permutation_seed=self._feature_permutation_seed,
                 )
 
     def get_ordered_indices_no_background(self):
@@ -448,9 +474,13 @@ class CrosstaskCorpus(Corpus):
             self.update_indices_by_task(task.index, indices)
 
 
-    def get_datasplit(self, remove_background, task_sets=None, split='train', task_ids=None, full=True, subsample=1, feature_downscale=1.0):
-        return CrosstaskDatasplit(self, remove_background, task_sets=task_sets, split=split, task_ids=task_ids,
-                                  full=full, subsample=subsample, feature_downscale=feature_downscale)
+    def get_datasplit(self, remove_background, task_sets=None, split='train', task_ids=None, full=True, subsample=1,
+                      feature_downscale=1.0, val_videos_override=None, feature_permutation_seed=None):
+        return CrosstaskDatasplit(
+            self, remove_background, task_sets=task_sets, split=split, task_ids=task_ids,
+            full=full, subsample=subsample, feature_downscale=feature_downscale,
+            val_videos_override=val_videos_override, feature_permutation_seed=feature_permutation_seed,
+        )
 
 
 class CrosstaskGroundTruth(GroundTruth):
