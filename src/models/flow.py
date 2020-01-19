@@ -62,7 +62,7 @@ class NICETrans(nn.Module):
         ReLUNet.add_args(parser)
         parser.add_argument('--flow_couple_layers', type=int, default=4)
         parser.add_argument('--flow_scale', action='store_true')
-        parser.add_argument('--flow_scale_no_initialize', action='store_true')
+        parser.add_argument('--flow_scale_no_zero', action='store_true')
 
     def __init__(self,
                  args,
@@ -78,7 +78,7 @@ class NICETrans(nn.Module):
             if args.flow_scale:
                 name = 'scale_cell{}'.format(i)
                 cell = ReLUNet(args, features//2, features//2)
-                if not args.flow_scale_no_initialize:
+                if not args.flow_scale_no_zero:
                     cell.init_identity()
                 setattr(self, name, cell)
 
