@@ -12,7 +12,7 @@ This repository provides a system for segmenting and labeling actions in a video
 ## Requirements
 
 * pytorch 1.2
-* Our fork of [pytorch-struct](https://github.com/dpfried/pytorch-struct). (Newer versions may run out of memory on the long videos in the CrossTask dataset, due to changes to pytorch-struct that improve runtime complexity but increase memory usage.)
+* Our fork of [pytorch-struct](https://github.com/dpfried/pytorch-struct-hsmm). (Newer versions may run out of memory on the long videos in the CrossTask dataset, due to changes to pytorch-struct that improve runtime complexity but increase memory usage.)
 
 See `env.yml` for a full list of dependencies, which can be installed with conda.
 
