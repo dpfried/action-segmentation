@@ -64,7 +64,7 @@ def add_misc_args(parser):
 def add_data_args(parser):
     group = parser.add_argument_group('data')
     group.add_argument('--dataset', choices=['crosstask', 'breakfast'], default='crosstask')
-    group.add_argument('--features', choices=['raw', 'pca'], default='raw')
+    group.add_argument('--features', choices=['raw', 'pca'], default='pca')
     group.add_argument('--feature_downscale', type=float, default=1.0)
     group.add_argument('--feature_permutation_seed', type=int)
     group.add_argument('--batch_size', type=int, default=5)
@@ -85,7 +85,9 @@ def add_data_args(parser):
 
     group.add_argument('--no_cache_features', action='store_true', help="")
 
-    group.add_argument('--crosstask_feature_groups', choices=['i3d', 'resnet', 'audio', 'narration'], nargs='+', default=['i3d', 'resnet', 'narration'])
+    group.add_argument('--crosstask_feature_groups',
+                       choices=['i3d', 'resnet', 'audio', 'narration'],
+                       nargs='+', default=['i3d', 'resnet', 'audio'])
     group.add_argument('--crosstask_training_data', choices=['primary', 'related'], nargs='+', default=['primary'])
 
     group.add_argument('--crosstask_cross_validation', action='store_true')
@@ -95,7 +97,7 @@ def add_data_args(parser):
 
 def add_classifier_args(parser):
     group = parser.add_argument_group('classifier')
-    group.add_argument('--classifier', choices=CLASSIFIERS.keys())
+    group.add_argument('--classifier', choices=CLASSIFIERS.keys(), required=True)
     group.add_argument('--training', choices=['supervised', 'unsupervised'], default='supervised')
     group.add_argument('--cuda', action='store_true')
     for name, cls in CLASSIFIERS.items():

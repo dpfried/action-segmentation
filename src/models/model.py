@@ -5,12 +5,12 @@ from data.corpus import Datasplit
 
 
 def add_training_args(parser):
-    parser.add_argument('--epochs', type=int, default=30)
+    parser.add_argument('--epochs', type=int, default=60)
     parser.add_argument('--batch_accumulation', type=int, default=1)
     parser.add_argument('--lr', type=float, default=5e-3)
     parser.add_argument('--workers', type=int, default=0)
 
-    parser.add_argument('--max_grad_norm', type=float, default=3)
+    parser.add_argument('--max_grad_norm', type=float, default=10)
 
     parser.add_argument('--print_every', type=int, default=100)
 

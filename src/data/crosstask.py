@@ -156,7 +156,7 @@ def load_videos_by_task(release_root, split='train', cv_n_train=30):
     return train_videos_by_task
 
 
-def datasets_by_task(release_root, feature_root, remove_background, task_sets=None, split='train', task_ids=None, full=True):
+def datasets_by_task(release_root, feature_root, constraints_root, remove_background, task_sets=None, split='train', task_ids=None, full=True):
     if task_sets is None:
         task_sets = list(CrosstaskCorpus.TASK_SET_PATHS.keys())
     if task_ids is None:
@@ -164,7 +164,8 @@ def datasets_by_task(release_root, feature_root, remove_background, task_sets=No
             task_id for task_set in task_sets
             for task_id in CrosstaskCorpus.TASK_IDS_BY_SET[task_set]
         ]
-    corpus = CrosstaskCorpus(release_root, feature_root, use_secondary='related' in task_sets)
+    corpus = CrosstaskCorpus(release_root, feature_root, use_secondary='related' in task_sets,
+                             load_constraints=True, constraints_root=constraints_root)
     return {
         task_id: corpus.get_datasplit(remove_background, task_sets=task_sets, split=split, task_ids=[task_id],
                                       full=full)
@@ -612,13 +613,20 @@ def extract_feature_groups(corpus, narration_feature_dirs=None):
     return grouped
 
 
-def pca_and_serialize_features(release_root, raw_feature_root, output_feature_root, remove_background,
+def pca_and_serialize_features(release_root, raw_feature_root, output_feature_root, constraints_root, remove_background,
                                pca_components_per_group=300, by_task=True, task_sets=None, narration_feature_dirs=None):
     if by_task:
-        grouped_datasets = datasets_by_task(release_root, raw_feature_root, remove_background,
-                                            split='all', task_sets=task_sets, full=True)
+        grouped_datasets = datasets_by_task(release_root, raw_feature_root, constraints_root,
+                                            remove_background, split='all',
+                                            task_sets=task_sets, full=True)
     else:
-        corpus = CrosstaskCorpus(release_root, raw_feature_root, use_secondary='related' in task_sets)
+        corpus = CrosstaskCorpus(
+            release_root,
+            raw_feature_root,
+            use_secondary='related' in task_sets,
+            load_constraints=True,
+            constraints_root=constraints_root,
+        )
         grouped_datasets = {
             'all': corpus.get_datasplit(remove_background, split='all', task_sets=task_sets)
         }
@@ -641,35 +649,41 @@ def pca_and_serialize_features(release_root, raw_feature_root, output_feature_ro
 if __name__ == "__main__":
     _release_root = 'data/crosstask/crosstask_release'
     _raw_feature_root = 'data/crosstask/crosstask_features'
+    _constraints_root = 'data/crosstask/crosstask_constraints'
     _components = 200
 
     # _narration_dirs = ['data/crosstask/narration', 'data/crosstask/narration_test']
+    _narration_dirs = None
 
-    # _task_sets = ['primary']
-    # for _remove_background in [False, True]:
-    #     for _by_task in [False, True]:
-    #         _output_feature_root = 'data/crosstask/crosstask_processed/crosstask_{}_pca-{}_{}_{}'.format(
-    #             '+'.join(_task_sets),
-    #             _components,
-    #             'no-bkg' if _remove_background else 'with-bkg',
-    #             'by-task' if _by_task else 'all-tasks',
-    #         )
-    #
-    #         pca_and_serialize_features(_release_root, _raw_feature_root, _output_feature_root, _remove_background,
-    #                                    pca_components_per_group=_components, by_task=_by_task, task_sets=_task_sets,
-    #                                    narration_feature_dirs=_narration_dirs)
-
-    _task_sets = ['related']
+    _task_sets = ['primary']
     for _remove_background in [False]:
         for _by_task in [True]:
-            #_output_feature_root = 'data/crosstask/crosstask_processed/crosstask_{}_pca-{}_{}_{}'.format(
-            # put related feats in the same directory as primary so we can load them all simultaneously
-            _output_feature_root = 'data/crosstask/crosstask_processed/crosstask_primary_pca-{}_{}_{}'.format(
-                # '+'.join(_task_sets),
+            _output_feature_root = 'data/crosstask/crosstask_processed/crosstask_{}_pca-{}_{}_{}'.format(
+                '+'.join(_task_sets),
                 _components,
                 'no-bkg' if _remove_background else 'with-bkg',
                 'by-task' if _by_task else 'all-tasks',
             )
 
-            pca_and_serialize_features(_release_root, _raw_feature_root, _output_feature_root, _remove_background,
-                                       pca_components_per_group=_components, by_task=_by_task, task_sets=_task_sets)
+            pca_and_serialize_features(
+                _release_root, _raw_feature_root, _output_feature_root, _constraints_root, _remove_background,
+                pca_components_per_group=_components, by_task=_by_task, task_sets=_task_sets,
+                narration_feature_dirs=_narration_dirs
+            )
+
+    # _task_sets = ['related']
+    # for _remove_background in [False]:
+    #     for _by_task in [True]:
+    #         #_output_feature_root = 'data/crosstask/crosstask_processed/crosstask_{}_pca-{}_{}_{}'.format(
+    #         # put related feats in the same directory as primary so we can load them all simultaneously
+    #         _output_feature_root = 'data/crosstask/crosstask_processed/crosstask_primary_pca-{}_{}_{}'.format(
+    #             # '+'.join(_task_sets),
+    #             _components,
+    #             'no-bkg' if _remove_background else 'with-bkg',
+    #             'by-task' if _by_task else 'all-tasks',
+    #         )
+
+    #         pca_and_serialize_features(
+    #             _release_root, _raw_feature_root, _output_feature_root, _constraints_root, _remove_background,
+    #             pca_components_per_group=_components, by_task=_by_task, task_sets=_task_sets
+    #         )
