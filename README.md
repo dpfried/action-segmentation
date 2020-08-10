@@ -12,13 +12,49 @@ This repository provides a system for segmenting and labeling actions in a video
 ## Requirements
 
 * pytorch 1.2
-* Our fork of [pytorch-struct](https://github.com/dpfried/pytorch-struct). (Newer versions may run out of memory on the long videos in the CrossTask dataset, due to changes to pytorch-struct that improve runtime complexity but increase memory usage.)
+* The `semimarkov` branch of my fork of [pytorch-struct](https://github.com/dpfried/pytorch-struct/tree/semimarkov). (Newer versions may run out of memory on the long videos in the CrossTask dataset, due to changes to pytorch-struct that improve runtime complexity but increase memory usage.) It can be installed via
 
-See `env.yml` for a full list of dependencies, which can be installed with conda.
+```bash
+pip install git+https://github.com/dpfried/pytorch-struct.git@semimarkov
+```
 
-## Documentation
+See `env.yml` for a full list of other dependencies, which can be installed with conda.
 
-Instructions / documentation coming (hopefully!) soon. If you're interested in running the code in the meantime, please contact Daniel Fried.
+## Setup
+
+1. Download and unpack the CrossTask dataset of Zhukov et al.:
+
+```bash
+cd data
+mkdir crosstask
+wget https://www.di.ens.fr/~dzhukov/crosstask/crosstask_release.zip
+wget https://www.di.ens.fr/~dzhukov/crosstask/crosstask_features.zip
+wget https://www.di.ens.fr/~dzhukov/crosstask/crosstask_constraints.zip
+unzip '*.zip'
+```
+
+2. Preprocess the features with PCA. In the repository's root folder, run
+
+```bash
+PYTHONPATH="src/":$PYTHONPATH python src/data/crosstask.py
+```
+
+This should generate the folder `data/crosstask/crosstask_processed/crosstask_primary_pca-200_with-bkg_by-task`
+
+3. To run our supervised system, run
+
+```bash
+./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup --classifier semimarkov --training supervised
+```
+
+## Experiments
+
+Here are the commands to replicate key results in our paper. Please contact Daniel Fried for others, or for any help or questions about the code.
+
+| Number | Name | Command |
+| ------ | ---- | ------- |
+| S6 | Supervised: SMM, generative |  `./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup --classifier semimarkov --training supervised` |
+| U7 | HSMM + Narr + Ord | `./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_unsup_narration_ordering --classifier semimarkov --training unsupervised --mix_tasks --task_specific_steps --sm_constrain_transitions --annotate_background_with_previous --sm_constrain_with_narration train --sm_constrain_narration_weight=-1e4 --cuda` |
 
 ## Credits
 
