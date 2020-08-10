@@ -49,7 +49,7 @@ This should generate the folder `data/crosstask/crosstask_processed/crosstask_pr
 
 ## Experiments
 
-Here are the commands to replicate key results in our paper. Please contact Daniel Fried for others, or for any help or questions about the code.
+Here are the commands to replicate key results from Table 2 in our [paper](https://arxiv.org/abs/2005.03684). Please contact Daniel Fried for others, or for any help or questions about the code.
 
 | Number | Name | Command |
 | ------ | ---- | ------- |
