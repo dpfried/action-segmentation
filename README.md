@@ -41,12 +41,6 @@ PYTHONPATH="src/":$PYTHONPATH python src/data/crosstask.py
 
 This should generate the folder `data/crosstask/crosstask_processed/crosstask_primary_pca-200_with-bkg_by-task`
 
-3. To run our supervised system, run
-
-```bash
-./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup --classifier semimarkov --training supervised
-```
-
 ## Experiments
 
 Here are the commands to replicate key results from Table 2 in our [paper](https://arxiv.org/abs/2005.03684). Please contact Daniel Fried for others, or for any help or questions about the code.
