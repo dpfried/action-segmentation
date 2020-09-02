@@ -11,6 +11,7 @@ This repository provides a system for segmenting and labeling actions in a video
 
 ## Requirements
 
+* python 3.6
 * pytorch 1.2
 * The `semimarkov` branch of my fork of [pytorch-struct](https://github.com/dpfried/pytorch-struct/tree/semimarkov). (Newer versions may run out of memory on the long videos in the CrossTask dataset, due to changes to pytorch-struct that improve runtime complexity but increase memory usage.) It can be installed via
 
