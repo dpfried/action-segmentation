@@ -53,7 +53,7 @@ Here are the commands to replicate key results from Table 2 in our [paper](https
 
 | Number | Name | Command |
 | ------ | ---- | ------- |
-| S6 | Supervised: SMM, generative |  `./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup --classifier semimarkov --training supervised` |
+| S6 | Supervised: SMM, generative |  `./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_sup --classifier semimarkov --training supervised --cuda` |
 | U7 | HSMM + Narr + Ord | `./run_crosstask_i3d-resnet-audio.sh pca_semimarkov_unsup_narration_ordering --classifier semimarkov --training unsupervised --mix_tasks --task_specific_steps --sm_constrain_transitions --annotate_background_with_previous --sm_constrain_with_narration train --sm_constrain_narration_weight=-1e4 --cuda` |
 
 ## Credits
