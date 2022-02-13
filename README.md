@@ -12,11 +12,12 @@ This repository provides a system for segmenting and labeling actions in a video
 ## Requirements
 
 * python 3.6
-* pytorch 1.2
-* The `semimarkov` branch of my fork of [pytorch-struct](https://github.com/dpfried/pytorch-struct/tree/semimarkov). (Newer versions may run out of memory on the long videos in the CrossTask dataset, due to changes to pytorch-struct that improve runtime complexity but increase memory usage.) It can be installed via
+* pytorch 1.3
+* Particular commits of [genbmm](https://github.com/harvardnlp/genbmm) and [pytorch-struct](https://github.com/harvardnlp/pytorch-struct/). Newer versions may run out of memory on the long videos in the CrossTask dataset, due to changes to pytorch-struct that improve runtime complexity but increase memory usage. They can be installed via
 
 ```bash
-pip install git+https://github.com/dpfried/pytorch-struct.git@semimarkov
+pip install -U git+https://github.com/harvardnlp/genbmm@bd42837ae0037a66803218d374c78fda72a9c9f4
+pip install -U git+https://github.com/harvardnlp/pytorch-struct@1c9b038a1bbece32fe8d2d46d9e3d7c09f4c08e7
 ```
 
 See `env.yml` for a full list of other dependencies, which can be installed with conda.
