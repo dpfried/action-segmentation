@@ -28,6 +28,7 @@ See `env.yml` for a full list of other dependencies, which can be installed with
 ```bash
 cd data
 mkdir crosstask
+cd crosstask
 wget https://www.di.ens.fr/~dzhukov/crosstask/crosstask_release.zip
 wget https://www.di.ens.fr/~dzhukov/crosstask/crosstask_features.zip
 wget https://www.di.ens.fr/~dzhukov/crosstask/crosstask_constraints.zip

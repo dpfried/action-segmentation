@@ -166,6 +166,9 @@ def datasets_by_task(release_root, feature_root, constraints_root, remove_backgr
         ]
     corpus = CrosstaskCorpus(release_root, feature_root, use_secondary='related' in task_sets,
                              load_constraints=True, constraints_root=constraints_root)
+    if not os.path.exists(os.path.join(corpus._release_root, "frame_counts.pkl")):
+        # get_datasplit generates frame counts but only for the passed task_ids, so we need to call this for its side effect of writing frame_counts.pkl
+        corpus.get_datasplit(remove_background, task_sets=CrosstaskCorpus.TASK_SET_PATHS.keys(), split='all', task_ids=None, full=full)
     return {
         task_id: corpus.get_datasplit(remove_background, task_sets=task_sets, split=split, task_ids=[task_id],
                                       full=full)
