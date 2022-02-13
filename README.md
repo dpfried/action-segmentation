@@ -13,6 +13,9 @@ This repository provides a system for segmenting and labeling actions in a video
 
 * python 3.6
 * pytorch 1.3
+* sklearn
+* editdistance
+* tqdm
 * Particular commits of [genbmm](https://github.com/harvardnlp/genbmm) and [pytorch-struct](https://github.com/harvardnlp/pytorch-struct/). Newer versions may run out of memory on the long videos in the CrossTask dataset, due to changes to pytorch-struct that improve runtime complexity but increase memory usage. They can be installed via
 
 ```bash
